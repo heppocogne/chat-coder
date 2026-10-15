@@ -6,13 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
-SKIP_DIRS = {".git", ".llm_backup", "node_modules", "__pycache__", ".venv", "venv",
-             "dist", "build", ".idea", ".vscode"}
-SKIP_FILES = {"package-lock.json", "yarn.lock", "poetry.lock", "pnpm-lock.yaml", "uv.lock"}
-# 秘密情報の可能性が高いファイル。チャットに送らない(除外一覧には理由付きで表示する)
-SECRET_NAMES = {".env", ".netrc", ".npmrc", ".pypirc", "id_rsa", "id_ed25519", "id_ecdsa",
-                "credentials", "secrets.json", "secrets.yaml", "secrets.yml"}
-SECRET_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".kdbx", ".keystore", ".jks")
+from .ignore import IgnoreMatcher
+
 MAX_FILE_BYTES = 200_000
 WARN_CHARS = 150_000
 
@@ -39,7 +34,9 @@ RULES = PACK_MARK + """
 - 出力が長くて途中で切れ、ユーザーから「続き」と言われたら、最後に出力した行を先頭から書き直し、その続きから出力する。最終行の `### END` は最後に1回だけ書く。"""
 
 
-def list_paths(root):
+def list_paths(root, matcher=None):
+    """送る候補のファイル(ルート相対・/区切り)。既定ルール・.gitignore・.llmignore で除外済み"""
+    matcher = matcher or IgnoreMatcher(root)
     try:
         r = subprocess.run(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -48,16 +45,11 @@ def list_paths(root):
     except (OSError, subprocess.CalledProcessError, UnicodeDecodeError):
         paths = []
         for d, dirs, files in os.walk(root):
-            dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
-            for f in files:
-                paths.append(Path(d, f).relative_to(root).as_posix())
-    out = []
-    for p in sorted(set(paths)):
-        parts = p.split("/")
-        if SKIP_DIRS & set(parts[:-1]) or parts[-1] in SKIP_FILES:
-            continue
-        out.append(p)
-    return out
+            rel_d = Path(d).relative_to(root).as_posix()
+            rel_d = "" if rel_d == "." else rel_d + "/"
+            dirs[:] = [x for x in dirs if not matcher.is_ignored(rel_d + x, is_dir=True)]
+            paths += [rel_d + f for f in files]
+    return [p for p in sorted(set(paths)) if not matcher.is_ignored(p)]
 
 
 def decode_bytes(raw):
@@ -90,10 +82,6 @@ def collect_files(root):
     files, skipped = [], []
     for rel in list_paths(root):
         p = root / rel
-        name = p.name.lower()
-        if name in SECRET_NAMES or name.startswith(".env.") or name.endswith(SECRET_SUFFIXES):
-            skipped.append((rel, "秘密情報の可能性があるため送らない"))
-            continue
         try:
             if not p.is_file():
                 continue

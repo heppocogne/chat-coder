@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from . import clipboard
+from .ignore import LLMIGNORE, ensure_llmignore
 from .patch import History, HistoryError, plan_changes
 from .project import WARN_CHARS, build_pack, collect_files
 from .reply import completed, extract_prose, ingest
@@ -166,6 +167,10 @@ def main(argv=None):
         pass
 
     print(f"プロジェクト: {root}")
+    if ensure_llmignore(root):
+        print(f"除外ルール {LLMIGNORE} を既定の内容で作成しました。送りたくないファイルがあれば編集してください。")
+    elif not (root / LLMIGNORE).is_file():
+        print(f"※ {LLMIGNORE} を作成できませんでした。内蔵の既定ルールで動作します。")
     history = History(root)
     note = ""
     last = None                                   # (pack, pack_id)

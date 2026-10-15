@@ -70,11 +70,11 @@ def wait_reply(pack_id, seq0):
                 print(msg)
             if buf is None:
                 continue
-            body = completed(buf)
+            body = completed(buf, pack_id)
             if body is not None:
                 return body
             if was_none:
-                print("応答が途中で切れているようです(末尾の `### END` がありません)。")
+                print(f"応答が途中で切れているようです(末尾の `### END {pack_id}` がありません)。")
                 print("チャットで「続き」と送り、続きをコピーしてください。(Ctrl+C でここまでを反映)")
     except KeyboardInterrupt:
         print()

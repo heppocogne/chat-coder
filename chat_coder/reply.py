@@ -6,7 +6,7 @@ import re
 from .patch import DEL_RE, EDIT_RE
 
 HEADER_RE = re.compile(r"^### LLM_LOOP[ \t]+(\S+)[ \t]*$", re.M)
-END_RE = re.compile(r"^### END[ \t]*$", re.M)
+END_LINE_RE = re.compile(r"^### END(?:[ \t]+\S+)?[ \t]*$", re.M)   # 説明文の抽出用(ID は問わない)
 PACK_RE = re.compile(r"^(?:# LLM_LOOP PACK|##### BEGIN FILE: )", re.M)
 FENCE_RE = re.compile(r"^`{3,}\w*[ \t]*$")
 BLOCK_RE = re.compile(r"^### (?:FILE|DELETE):", re.M)
@@ -48,10 +48,16 @@ def ingest(text, pack_id, buf):
     return head + _strip_edge_fences(t), "続きを連結しました。"
 
 
-def completed(buf):
-    """`### END` まで届いていれば、その手前までの本文。届いていなければ None"""
-    m = END_RE.search(buf)
-    return buf[: m.start()] if m else None
+def completed(buf, pack_id):
+    """`### END <pack_id>` まで届いていれば、その手前までの本文。届いていなければ None
+
+    ID が一致する行だけを終端とみなし、複数あれば最後の行を採る。
+    コードや説明の中の単独行 `### END` では完了扱いにならない。
+    """
+    last = None
+    for m in re.finditer(rf"^### END[ \t]+{re.escape(pack_id)}[ \t]*$", buf, re.M):
+        last = m
+    return buf[: last.start()] if last else None
 
 
 def extract_prose(reply):
@@ -59,6 +65,6 @@ def extract_prose(reply):
     t = EDIT_RE.sub("", reply)
     t = DEL_RE.sub("", t)
     t = HEADER_RE.sub("", t)
-    t = END_RE.sub("", t)
+    t = END_LINE_RE.sub("", t)
     t = _strip_edge_fences(t)
     return re.sub(r"\n{3,}", "\n\n", t).strip()

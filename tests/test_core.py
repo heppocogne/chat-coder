@@ -220,6 +220,7 @@ class ProjectTest(TempRoot):
         pack = build_pack([("a.py", "x\n")], "do it", "", "abc123")
         self.assertTrue(pack.startswith(PACK_MARK))
         self.assertIn("### LLM_LOOP abc123", pack)
+        self.assertIn("### END abc123", pack)
         self.assertIn("##### BEGIN FILE: a.py", pack)
 
 
@@ -235,31 +236,54 @@ class ReplyTest(unittest.TestCase):
         self.assertEqual(ingest(t, self.ID, None), (None, ""))
 
     def test_stale_id_skipped(self):
-        buf, msg = ingest("### LLM_LOOP zzz999\n### END\n", self.ID, None)
+        buf, msg = ingest("### LLM_LOOP zzz999\n### END zzz999\n", self.ID, None)
         self.assertIsNone(buf)
         self.assertIn("zzz999", msg)
 
     def test_full_copy_with_fences(self):
-        t = f"````\n### LLM_LOOP {self.ID}\n説明\n{edit('a.py', 'a\n', 'b\n')}### END\n````\n"
+        t = (f"````\n### LLM_LOOP {self.ID}\n説明\n{edit('a.py', 'a\n', 'b\n')}"
+             f"### END {self.ID}\n````\n")
         buf, _ = ingest(t, self.ID, None)
-        body = completed(buf)
+        body = completed(buf, self.ID)
         self.assertIsNotNone(body)
         self.assertNotIn("### END", body)
         self.assertEqual(extract_prose(body), "説明")
 
     def test_answer_only_is_complete(self):
-        buf, _ = ingest(f"### LLM_LOOP {self.ID}\nはい、そうです。\n### END", self.ID, None)
-        self.assertEqual(completed(buf), f"### LLM_LOOP {self.ID}\nはい、そうです。\n")
+        buf, _ = ingest(f"### LLM_LOOP {self.ID}\nはい、そうです。\n### END {self.ID}", self.ID, None)
+        self.assertEqual(completed(buf, self.ID), f"### LLM_LOOP {self.ID}\nはい、そうです。\n")
+
+    def test_bare_end_line_in_body_does_not_complete(self):
+        # コードや説明の中の単独行 `### END` や、別 ID の END で完了扱いにならない
+        text = (f"### LLM_LOOP {self.ID}\n### FILE: doc.md\n<<<<<<< SEARCH\n=======\n"
+                "手順\n### END\n続き\n### END zzz999\nさらに続き\n")
+        buf, _ = ingest(text, self.ID, None)
+        self.assertIsNone(completed(buf, self.ID))
+
+    def test_end_marker_with_id_keeps_everything_before_it(self):
+        body = (f"### LLM_LOOP {self.ID}\n### FILE: doc.md\n<<<<<<< SEARCH\n=======\n"
+                "手順\n### END\n続き\n>>>>>>> REPLACE\n")
+        buf, _ = ingest(body + f"### END {self.ID}\n", self.ID, None)
+        self.assertEqual(completed(buf, self.ID), body)
+
+    def test_last_end_with_id_wins_and_trailing_text_is_allowed(self):
+        text = f"### LLM_LOOP {self.ID}\nA\n### END {self.ID}\nB\n### END {self.ID}\n````\n以上です。\n"
+        buf, _ = ingest(text, self.ID, None)
+        self.assertEqual(completed(buf, self.ID), f"### LLM_LOOP {self.ID}\nA\n### END {self.ID}\nB\n")
+
+    def test_end_id_must_match_whole_id(self):
+        buf, _ = ingest(f"### LLM_LOOP {self.ID}\nA\n### END {self.ID}x\n", self.ID, None)
+        self.assertIsNone(completed(buf, self.ID))
 
     def test_truncated_then_continued(self):
         first = (f"### LLM_LOOP {self.ID}\n### FILE: a.py\n<<<<<<< SEARCH\nx = 1\n=======\n"
                  "x = 2\ny = ")
         buf, _ = ingest(first, self.ID, None)
-        self.assertIsNone(completed(buf))
-        cont = "````\ny = 3\n>>>>>>> REPLACE\n### END\n````"
+        self.assertIsNone(completed(buf, self.ID))
+        cont = f"````\ny = 3\n>>>>>>> REPLACE\n### END {self.ID}\n````"
         buf, msg = ingest(cont, self.ID, buf)
         self.assertEqual(msg, "続きを連結しました。")
-        body = completed(buf)
+        body = completed(buf, self.ID)
         self.assertIsNotNone(body)
         self.assertIn("x = 2\ny = 3\n>>>>>>> REPLACE\n", body)
 

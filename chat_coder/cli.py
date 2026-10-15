@@ -1,4 +1,5 @@
 """対話ループ: 指示入力 → pack をクリップボードへ → 応答のコピーを検知 → 反映"""
+
 from __future__ import annotations
 
 import argparse
@@ -8,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import clipboard
+from . import __version__, clipboard
 from .ignore import LLMIGNORE, ensure_llmignore
 from .patch import History, HistoryError, plan_changes
 from .project import WARN_CHARS, build_pack, collect_files
@@ -21,6 +22,7 @@ SHOW_SKIPPED = 15
 def beep():
     try:
         import winsound
+
         winsound.MessageBeep()
     except Exception:
         pass
@@ -45,7 +47,7 @@ def read_prompt(note):
             break
         lines.append(line)
         if len(lines) == 1 and line.strip().lower() in COMMANDS:
-            break                                 # コマンドは空行を待たずに実行
+            break  # コマンドは空行を待たずに実行
     return "\n".join(lines)
 
 
@@ -75,7 +77,9 @@ def wait_reply(pack_id, seq0):
                 return body
             if was_none:
                 print(f"応答が途中で切れているようです(末尾の `### END {pack_id}` がありません)。")
-                print("チャットで「続き」と送り、続きをコピーしてください。(Ctrl+C でここまでを反映)")
+                print(
+                    "チャットで「続き」と送り、続きをコピーしてください。(Ctrl+C でここまでを反映)"
+                )
     except KeyboardInterrupt:
         print()
         if buf is not None:
@@ -139,9 +143,11 @@ def _handle_reply(root, history, reply):
         for e in plan.errors:
             print("  -", e)
         print("次の指示を入力すると、このエラーも一緒に送ります(空行のみで再送)。")
-        return ("前回の応答は次の理由で適用できませんでした(ファイルは何も変更されていません)。"
-                "SEARCH は現在のファイル内容から1文字も変えずにコピーしてやり直してください。\n"
-                + "\n".join(f"- {e}" for e in plan.errors))
+        return (
+            "前回の応答は次の理由で適用できませんでした(ファイルは何も変更されていません)。"
+            "SEARCH は現在のファイル内容から1文字も変えずにコピーしてやり直してください。\n"
+            + "\n".join(f"- {e}" for e in plan.errors)
+        )
     if not plan.changes:
         print("変更はありません。" if not plan.n_ops else "変更はありません(内容が同じ)。")
         return ""
@@ -158,8 +164,10 @@ def _handle_reply(root, history, reply):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="chat-coder",
-                                 description="チャット経由コーディング用の半自動ループ")
+    ap = argparse.ArgumentParser(
+        prog="chat-coder", description="チャット経由コーディング用の半自動ループ"
+    )
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("root", nargs="?", default=".", help="プロジェクトのルート(省略時はカレント)")
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
@@ -172,15 +180,17 @@ def main(argv=None):
 
     print(f"プロジェクト: {root}")
     if ensure_llmignore(root):
-        print(f"除外ルール {LLMIGNORE} を既定の内容で作成しました。送りたくないファイルがあれば編集してください。")
+        print(
+            f"除外ルール {LLMIGNORE} を既定の内容で作成しました。送りたくないファイルがあれば編集してください。"
+        )
     elif not (root / LLMIGNORE).is_file():
         print(f"※ {LLMIGNORE} を作成できませんでした。内蔵の既定ルールで動作します。")
     history = History(root)
     note = ""
-    last = None                                   # (pack, pack_id)
+    last = None  # (pack, pack_id)
     while True:
         instr = read_prompt(note)
-        if instr is None:                         # Ctrl+C: 入力だけ取り消す
+        if instr is None:  # Ctrl+C: 入力だけ取り消す
             continue
         cmd = instr.strip().lower()
         if cmd == "/q" or (not instr and not note):
@@ -203,9 +213,13 @@ def main(argv=None):
             print(f"クリップボードに書き込めません: {e}")
             continue
         seq0 = clipboard.seq()
-        print(f"クリップボードにコピーしました({len(pack):,} 文字)。チャットに貼り付けて送信してください。")
+        print(
+            f"クリップボードにコピーしました({len(pack):,} 文字)。チャットに貼り付けて送信してください。"
+        )
         if len(pack) > WARN_CHARS:
-            print("  ※ 文字数が多いです。チャットの入力上限に注意(超える場合はファイルを絞るか添付で渡す)。")
+            print(
+                "  ※ 文字数が多いです。チャットの入力上限に注意(超える場合はファイルを絞るか添付で渡す)。"
+            )
         reply = wait_reply(pack_id, seq0)
         if reply is None:
             continue

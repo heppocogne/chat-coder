@@ -1,4 +1,5 @@
 """応答の SEARCH/REPLACE ブロックの解析・適用と、元に戻す履歴"""
+
 from __future__ import annotations
 
 import datetime
@@ -14,7 +15,8 @@ BACKUP_DIRNAME = ".llm_backup"
 
 EDIT_RE = re.compile(
     r"^### FILE:[ \t]*([^\n]+?)[ \t]*\n<<<<<<< SEARCH[ \t]*\n(.*?)^=======[ \t]*\n(.*?)^>>>>>>> REPLACE[ \t]*$",
-    re.S | re.M)
+    re.S | re.M,
+)
 DEL_RE = re.compile(r"^### DELETE:[ \t]*([^\n]+?)[ \t]*$", re.M)
 SEARCH_RE = re.compile(r"^<<<<<<< SEARCH[ \t]*$", re.M)
 
@@ -22,8 +24,8 @@ SEARCH_RE = re.compile(r"^<<<<<<< SEARCH[ \t]*$", re.M)
 @dataclass
 class Change:
     rel: str
-    old_text: str | None      # None = 存在しなかった
-    new_text: str | None      # None = 削除
+    old_text: str | None  # None = 存在しなかった
+    new_text: str | None  # None = 削除
     old_bytes: bytes | None
     new_bytes: bytes | None
 
@@ -32,7 +34,7 @@ class Change:
 class Plan:
     changes: list = field(default_factory=list)
     errors: list = field(default_factory=list)
-    n_ops: int = 0            # 応答に含まれていた編集/削除ブロックの数
+    n_ops: int = 0  # 応答に含まれていた編集/削除ブロックの数
 
 
 @dataclass
@@ -68,7 +70,7 @@ def _canonical_rel(root, rel):
     # 解決後のどの階層も .git / .llm_backup であってはならない(大文字小文字・末尾の空白やドットも同一視)
     if any(p.rstrip(" .").lower() in _PROTECTED for p in parts):
         raise ValueError("このパスは変更できない")
-    for name in _PROTECTED:                      # 短い名前(GIT~1 など)による別名も防ぐ
+    for name in _PROTECTED:  # 短い名前(GIT~1 など)による別名も防ぐ
         guarded = root / name
         for i in range(len(parts)):
             cand = root.joinpath(*parts[: i + 1])
@@ -90,13 +92,14 @@ def find_replace(text, old, new):
     tl = text.split("\n")
     ol = old.rstrip("\n").split("\n")
     key = [l.rstrip() for l in ol]
-    hits = [i for i in range(len(tl) - len(ol) + 1)
-            if [l.rstrip() for l in tl[i:i + len(ol)]] == key]
+    hits = [
+        i for i in range(len(tl) - len(ol) + 1) if [l.rstrip() for l in tl[i : i + len(ol)]] == key
+    ]
     if len(hits) != 1:
         raise ValueError(f"SEARCH が {len(hits)} 箇所に一致(0なら元コードと違っている)")
     i = hits[0]
     nl = new.rstrip("\n").split("\n") if new.strip("\n") else []
-    tl[i:i + len(ol)] = nl
+    tl[i : i + len(ol)] = nl
     return "\n".join(tl)
 
 
@@ -125,8 +128,10 @@ def plan_changes(root, reply):
     n_search = len(SEARCH_RE.findall(reply))
     n_edit = sum(1 for o in ops if o[1] == "edit")
     if n_search != n_edit:
-        err(f"SEARCH が {n_search} 個あるのに {n_edit} 個しか認識できなかった"
-            "(ブロックの形式が崩れているか、応答が途中で切れている)")
+        err(
+            f"SEARCH が {n_search} 個あるのに {n_edit} 個しか認識できなかった"
+            "(ブロックの形式が崩れているか、応答が途中で切れている)"
+        )
 
     files, state = {}, {}
 
@@ -151,7 +156,7 @@ def plan_changes(root, reply):
                     raise ValueError("削除対象のファイルが存在しない")
                 state[rel] = None
             elif old.strip() == "":
-                state[rel] = new                      # 新規作成 / 全体置換
+                state[rel] = new  # 新規作成 / 全体置換
             elif state[rel] is None:
                 raise ValueError("編集対象のファイルが存在しない")
             else:
@@ -225,7 +230,7 @@ class History:
         成功したときだけ undo の履歴に登録する。"""
         self.base.mkdir(exist_ok=True)
         ignore = self.base / ".gitignore"
-        if not ignore.exists():                       # バックアップを git の対象にしない
+        if not ignore.exists():  # バックアップを git の対象にしない
             ignore.write_text("*\n", encoding="utf-8")
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         bdir, n = self.base / stamp, 1
@@ -245,7 +250,9 @@ class History:
                     entry.has_after.add(c.rel)
         except OSError as e:
             shutil.rmtree(bdir, ignore_errors=True)
-            raise HistoryError(f"バックアップを作成できませんでした({e})。ファイルは変更していません")
+            raise HistoryError(
+                f"バックアップを作成できませんでした({e})。ファイルは変更していません"
+            )
 
         # 2. 適用する。失敗したら、それまでに適用したファイルを逆順に戻す
         done = []
@@ -262,7 +269,8 @@ class History:
             if failed:
                 raise HistoryError(
                     f"適用の途中で失敗し、次のファイルを元に戻せませんでした: {', '.join(failed)}。"
-                    f"変更前の内容は {bdir / 'before'} にあります。手動で復元してください({e})")
+                    f"変更前の内容は {bdir / 'before'} にあります。手動で復元してください({e})"
+                )
             shutil.rmtree(bdir, ignore_errors=True)
             if isinstance(e, OSError):
                 raise HistoryError(f"適用の途中で失敗したため、すべて元に戻しました({e})")
@@ -289,7 +297,9 @@ class History:
         return self._move(self._undo, self._redo, "after", "before", force, "戻す履歴がありません")
 
     def redo(self, force=False):
-        return self._move(self._redo, self._undo, "before", "after", force, "やり直す履歴がありません")
+        return self._move(
+            self._redo, self._undo, "before", "after", force, "やり直す履歴がありません"
+        )
 
     def _present(self, entry, state):
         return entry.had_before if state == "before" else entry.has_after

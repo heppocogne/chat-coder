@@ -1,4 +1,5 @@
 """クリップボードに入ってきたテキストが、今の送信に対する応答かを判定する(純粋関数のみ)"""
+
 from __future__ import annotations
 
 import re
@@ -6,7 +7,7 @@ import re
 from .patch import DEL_RE, EDIT_RE
 
 HEADER_RE = re.compile(r"^### LLM_LOOP[ \t]+(\S+)[ \t]*$", re.M)
-END_LINE_RE = re.compile(r"^### END(?:[ \t]+\S+)?[ \t]*$", re.M)   # 説明文の抽出用(ID は問わない)
+END_LINE_RE = re.compile(r"^### END(?:[ \t]+\S+)?[ \t]*$", re.M)  # 説明文の抽出用(ID は問わない)
 PACK_RE = re.compile(r"^(?:# LLM_LOOP PACK|##### BEGIN FILE: )", re.M)
 FENCE_RE = re.compile(r"^`{3,}\w*[ \t]*$")
 BLOCK_RE = re.compile(r"^### (?:FILE|DELETE):", re.M)
@@ -31,17 +32,17 @@ def ingest(text, pack_id, buf):
     buf は応答の蓄積(None = まだ受信していない)。
     """
     t = text.replace("\r\n", "\n")
-    if PACK_RE.search(t):                       # 自分が送った pack をコピーし直しただけ
+    if PACK_RE.search(t):  # 自分が送った pack をコピーし直しただけ
         return buf, ""
     m = HEADER_RE.search(t)
     if m:
         if m.group(1) != pack_id:
             return buf, f"別の送信({m.group(1)})への応答なので無視しました。"
-        return t[m.start():], ""
+        return t[m.start() :], ""
     if buf is None:
         if BLOCK_RE.search(t):
             return t, "※ 先頭の `### LLM_LOOP` 行が無い応答として扱います。"
-        return None, ""                         # 無関係なコピー
+        return None, ""  # 無関係なコピー
     # 途中で切れた応答の続き: 最後の行は書き直されるので捨ててから連結する
     s = buf.rstrip("\n")
     head = s[: s.rfind("\n") + 1]

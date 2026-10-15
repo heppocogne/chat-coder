@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chat-coder"
+version = "0.1.0"
+description = "コーディングエージェントが使えない環境で、LLM チャットをエージェント代わりにする半自動ループ"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+chat-coder = "chat_coder.cli:main"
+
+[tool.setuptools]
+packages = ["chat_coder"]

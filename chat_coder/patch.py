@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .project import decode_bytes
 
@@ -52,6 +52,10 @@ def _canonical_rel(root, rel):
     """応答中のパスを、解決後のルート相対パス(/区切り)に正規化する。許可できなければ ValueError"""
     if not rel.strip():
         raise ValueError("パスが空")
+    # resolve() の前に拒否する(UNC パス \\host\share を解決するとネットワークに接続してしまう)
+    pw = PureWindowsPath(rel)
+    if pw.drive or pw.root or rel.startswith(("/", "\\")) or ":" in rel:
+        raise ValueError("絶対パス・UNC パス・ドライブ指定は使えない")
     target = (root / rel).resolve()
     try:
         parts = target.relative_to(root).parts

@@ -72,7 +72,8 @@ class PatchTest(TempRoot):
         plan = plan_changes(self.root, edit("../evil.py", "", "x\n"))
         self.assertTrue(plan.errors)
         for rel in (".git/config", "./.git/config", "sub/../.git/config", ".GIT/config",
-                    ".git /config", "a/.git/hooks/x", ".llm_backup/x", "C:/Windows/x", "."):
+                    ".git /config", "a/.git/hooks/x", ".llm_backup/x", "C:/Windows/x", ".",
+                    "//host/share/x", r"\\host\share\x", "/abs/x", "C:x"):
             plan = plan_changes(self.root, edit(rel, "", "x\n"))
             self.assertTrue(plan.errors, rel)
 
@@ -138,6 +139,15 @@ class ProjectTest(TempRoot):
         files, skipped = collect_files(self.root)
         self.assertEqual(sorted(r for r, _ in files), ["ok.py", "sjis.txt"])
         self.assertEqual(dict(skipped).keys(), {"img.bin", "big.txt", "weird.dat"})
+
+    def test_secret_files_not_packed(self):
+        self.write("ok.py", "x\n")
+        self.write(".env", "TOKEN=1\n")
+        self.write(".env.local", "TOKEN=1\n")
+        self.write("deploy.pem", "KEY\n")
+        files, skipped = collect_files(self.root)
+        self.assertEqual([r for r, _ in files], ["ok.py"])
+        self.assertEqual({r for r, _ in skipped}, {".env", ".env.local", "deploy.pem"})
 
     def test_decode(self):
         self.assertEqual(decode_bytes(b"a\r\nb"), ("a\nb", "utf-8"))

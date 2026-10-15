@@ -9,6 +9,10 @@ from pathlib import Path
 SKIP_DIRS = {".git", ".llm_backup", "node_modules", "__pycache__", ".venv", "venv",
              "dist", "build", ".idea", ".vscode"}
 SKIP_FILES = {"package-lock.json", "yarn.lock", "poetry.lock", "pnpm-lock.yaml", "uv.lock"}
+# 秘密情報の可能性が高いファイル。チャットに送らない(除外一覧には理由付きで表示する)
+SECRET_NAMES = {".env", ".netrc", ".npmrc", ".pypirc", "id_rsa", "id_ed25519", "id_ecdsa",
+                "credentials", "secrets.json", "secrets.yaml", "secrets.yml"}
+SECRET_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".kdbx", ".keystore", ".jks")
 MAX_FILE_BYTES = 200_000
 WARN_CHARS = 150_000
 
@@ -73,13 +77,28 @@ def decode_bytes(raw):
     raise ValueError("文字コードを判別できない(UTF-8 / cp932 以外)")
 
 
+def _inside(root, path):
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def collect_files(root):
     """([(相対パス, 本文)], [(相対パス, 除外理由)])"""
     files, skipped = [], []
     for rel in list_paths(root):
         p = root / rel
+        name = p.name.lower()
+        if name in SECRET_NAMES or name.startswith(".env.") or name.endswith(SECRET_SUFFIXES):
+            skipped.append((rel, "秘密情報の可能性があるため送らない"))
+            continue
         try:
             if not p.is_file():
+                continue
+            if p.is_symlink() and not _inside(root, p):
+                skipped.append((rel, "プロジェクト外を指すリンク"))
                 continue
             size = p.stat().st_size
             if size > MAX_FILE_BYTES:

@@ -145,7 +145,11 @@ def _handle_reply(root, history, reply):
     if not plan.changes:
         print("変更はありません。" if not plan.n_ops else "変更はありません(内容が同じ)。")
         return ""
-    history.commit(plan.changes)
+    try:
+        history.commit(plan.changes)
+    except HistoryError as e:
+        print(f"反映に失敗しました: {e}")
+        return ""
     print("反映しました:")
     for c in plan.changes:
         print(_stat(c))

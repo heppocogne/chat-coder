@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import datetime
+import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
@@ -194,6 +196,21 @@ def _put(path, data):
     path.write_bytes(data)
 
 
+def _put_atomic(path, data):
+    """一時ファイルに書いてから置き換える。途中で失敗しても元のファイルは壊れない"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 class History:
     """適用ごとに .llm_backup/<日時>/{before,after}/ を残し、undo / redo できるようにする"""
 
@@ -204,6 +221,8 @@ class History:
         self._redo = []
 
     def commit(self, changes):
+        """変更を適用する。途中で失敗したら、すでに変更したファイルを元に戻してから HistoryError を投げる。
+        成功したときだけ undo の履歴に登録する。"""
         self.base.mkdir(exist_ok=True)
         ignore = self.base / ".gitignore"
         if not ignore.exists():                       # バックアップを git の対象にしない
@@ -214,22 +233,57 @@ class History:
             n += 1
             bdir = self.base / f"{stamp}_{n}"
         entry = Entry(bdir, [c.rel for c in changes], set(), set())
-        for c in changes:
-            if c.old_bytes is not None:
-                _put(bdir / "before" / c.rel, c.old_bytes)
-                entry.had_before.add(c.rel)
-            if c.new_bytes is not None:
-                _put(bdir / "after" / c.rel, c.new_bytes)
-                entry.has_after.add(c.rel)
-        for c in changes:
-            p = self.root / c.rel
-            if c.new_bytes is None:
-                p.unlink()
-            else:
-                _put(p, c.new_bytes)
+
+        # 1. 変更前・変更後をすべてバックアップする。失敗したら何も変更しない
+        try:
+            for c in changes:
+                if c.old_bytes is not None:
+                    _put(bdir / "before" / c.rel, c.old_bytes)
+                    entry.had_before.add(c.rel)
+                if c.new_bytes is not None:
+                    _put(bdir / "after" / c.rel, c.new_bytes)
+                    entry.has_after.add(c.rel)
+        except OSError as e:
+            shutil.rmtree(bdir, ignore_errors=True)
+            raise HistoryError(f"バックアップを作成できませんでした({e})。ファイルは変更していません")
+
+        # 2. 適用する。失敗したら、それまでに適用したファイルを逆順に戻す
+        done = []
+        try:
+            for c in changes:
+                p = self.root / c.rel
+                if c.new_bytes is None:
+                    p.unlink()
+                else:
+                    _put_atomic(p, c.new_bytes)
+                done.append(c)
+        except BaseException as e:
+            failed = self._rollback(done)
+            if failed:
+                raise HistoryError(
+                    f"適用の途中で失敗し、次のファイルを元に戻せませんでした: {', '.join(failed)}。"
+                    f"変更前の内容は {bdir / 'before'} にあります。手動で復元してください({e})")
+            shutil.rmtree(bdir, ignore_errors=True)
+            if isinstance(e, OSError):
+                raise HistoryError(f"適用の途中で失敗したため、すべて元に戻しました({e})")
+            raise
+
         self._undo.append(entry)
         self._redo.clear()
         return entry
+
+    def _rollback(self, done):
+        """適用済みの変更を元に戻す。戻せなかったパスの一覧を返す"""
+        failed = []
+        for c in reversed(done):
+            try:
+                if c.old_bytes is None:
+                    (self.root / c.rel).unlink(missing_ok=True)
+                else:
+                    _put_atomic(self.root / c.rel, c.old_bytes)
+            except OSError:
+                failed.append(c.rel)
+        return failed
 
     def undo(self, force=False):
         return self._move(self._undo, self._redo, "after", "before", force, "戻す履歴がありません")

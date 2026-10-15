@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from chat_coder.patch import History, HistoryError, plan_changes
 from chat_coder.project import PACK_MARK, build_pack, collect_files, decode_bytes
@@ -118,6 +120,65 @@ class HistoryTest(TempRoot):
     def test_empty_history(self):
         with self.assertRaises(HistoryError):
             History(self.root).undo()
+
+    def _two_files(self):
+        a = self.write("a.py", "1\n")
+        b = self.write("b.py", "2\n")
+        plan = plan_changes(self.root, edit("a.py", "1\n", "10\n") + edit("b.py", "2\n", "20\n"))
+        return a, b, plan
+
+    def _no_backup_dirs(self, h):
+        return [p for p in h.base.iterdir() if p.is_dir()] == []
+
+    def test_failed_apply_restores_earlier_files(self):
+        a, b, plan = self._two_files()
+        h = History(self.root)
+        real, calls = os.replace, []
+
+        def flaky(src, dst):
+            calls.append(dst)
+            if len(calls) == 2:                       # b.py への適用だけ失敗させる
+                raise OSError("disk full")
+            return real(src, dst)
+
+        with mock.patch("chat_coder.patch.os.replace", side_effect=flaky):
+            with self.assertRaises(HistoryError):
+                h.commit(plan.changes)
+        self.assertEqual(a.read_text(), "1\n")        # 先に変えた a.py は戻っている
+        self.assertEqual(b.read_text(), "2\n")
+        self.assertFalse(h._undo)                     # 失敗した適用は履歴に載せない
+        self.assertTrue(self._no_backup_dirs(h))
+        self.assertEqual([p for p in self.root.rglob(".*.tmp")], [])
+
+    def test_rollback_failure_reports_backup_location(self):
+        a, b, plan = self._two_files()
+        h = History(self.root)
+        real, calls = os.replace, []
+
+        def flaky(src, dst):
+            calls.append(dst)
+            if len(calls) in (2, 3):                  # b.py の適用と、a.py の巻き戻しを失敗させる
+                raise OSError("locked")
+            return real(src, dst)
+
+        with mock.patch("chat_coder.patch.os.replace", side_effect=flaky):
+            with self.assertRaises(HistoryError) as cm:
+                h.commit(plan.changes)
+        msg = str(cm.exception)
+        self.assertIn("a.py", msg)
+        self.assertIn("before", msg)
+        self.assertEqual(a.read_text(), "10\n")       # 戻せなかったので適用後のまま
+        self.assertFalse(self._no_backup_dirs(h))     # 手動復元用にバックアップは残す
+
+    def test_backup_failure_changes_nothing(self):
+        a, b, plan = self._two_files()
+        h = History(self.root)
+        with mock.patch("chat_coder.patch._put", side_effect=OSError("no space")):
+            with self.assertRaises(HistoryError):
+                h.commit(plan.changes)
+        self.assertEqual((a.read_text(), b.read_text()), ("1\n", "2\n"))
+        self.assertTrue(self._no_backup_dirs(h))
+        self.assertFalse(h._undo)
 
     def test_new_commit_clears_redo(self):
         self.write("a.py", "1\n")

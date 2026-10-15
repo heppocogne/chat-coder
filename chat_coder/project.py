@@ -1,4 +1,5 @@
 """プロジェクトのファイル収集と、チャットに送る pack の生成"""
+
 from __future__ import annotations
 
 import codecs
@@ -11,9 +12,11 @@ from .ignore import IgnoreMatcher
 MAX_FILE_BYTES = 200_000
 WARN_CHARS = 150_000
 
-PACK_MARK = "# LLM_LOOP PACK"   # pack の先頭行。応答と取り違えないための目印
+PACK_MARK = "# LLM_LOOP PACK"  # pack の先頭行。応答と取り違えないための目印
 
-RULES = PACK_MARK + """
+RULES = (
+    PACK_MARK
+    + """
 あなたはコーディングアシスタントです。下記のプロジェクト全ファイルと指示を渡します。
 
 【出力ルール】
@@ -32,6 +35,7 @@ RULES = PACK_MARK + """
 - 同じファイルに複数ブロックを書いてよい(上から順に適用される)。
 - パスはプロジェクトルートからの相対パス(/区切り)。
 - 出力が長くて途中で切れ、ユーザーから「続き」と言われたら、最後に出力した行を先頭から書き直し、その続きから出力する。最終行の `### END {id}` は最後に1回だけ書く。"""
+)
 
 
 def list_paths(root, matcher=None):
@@ -40,7 +44,10 @@ def list_paths(root, matcher=None):
     try:
         r = subprocess.run(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-            cwd=root, capture_output=True, check=True)
+            cwd=root,
+            capture_output=True,
+            check=True,
+        )
         paths = [p for p in r.stdout.decode("utf-8").split("\0") if p]
     except (OSError, subprocess.CalledProcessError, UnicodeDecodeError):
         paths = []

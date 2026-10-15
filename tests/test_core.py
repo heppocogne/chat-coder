@@ -30,9 +30,11 @@ class PatchTest(TempRoot):
     def test_edit_new_delete(self):
         self.write("a.py", "x = 1\ny = 2\n")
         self.write("old.txt", "bye\n")
-        reply = (edit("a.py", "x = 1\n", "x = 10\n")
-                 + edit("sub/new.py", "", "print('hi')\n")
-                 + "### DELETE: old.txt\n")
+        reply = (
+            edit("a.py", "x = 1\n", "x = 10\n")
+            + edit("sub/new.py", "", "print('hi')\n")
+            + "### DELETE: old.txt\n"
+        )
         plan = plan_changes(self.root, reply)
         self.assertEqual(plan.errors, [])
         self.assertEqual(plan.n_ops, 3)
@@ -49,7 +51,9 @@ class PatchTest(TempRoot):
         self.assertEqual(plan.errors, [])
         History(self.root).commit(plan.changes)
         self.assertEqual((self.root / "crlf.txt").read_bytes(), b"\xef\xbb\xbfa\r\nc\r\n")
-        self.assertEqual((self.root / "sjis.txt").read_bytes(), "こんにちは\n世界\n".encode("cp932"))
+        self.assertEqual(
+            (self.root / "sjis.txt").read_bytes(), "こんにちは\n世界\n".encode("cp932")
+        )
 
     def test_unencodable_char_is_error(self):
         self.write("sjis.txt", "あ\n".encode("cp932"))
@@ -66,16 +70,30 @@ class PatchTest(TempRoot):
 
     def test_truncated_block_is_error(self):
         self.write("a.py", "x = 1\n")
-        reply = edit("a.py", "x = 1\n", "x = 2\n") + "### FILE: a.py\n<<<<<<< SEARCH\nx = 2\n=====\n"
+        reply = (
+            edit("a.py", "x = 1\n", "x = 2\n") + "### FILE: a.py\n<<<<<<< SEARCH\nx = 2\n=====\n"
+        )
         plan = plan_changes(self.root, reply)
         self.assertTrue(plan.errors)
 
     def test_path_escape_rejected(self):
         plan = plan_changes(self.root, edit("../evil.py", "", "x\n"))
         self.assertTrue(plan.errors)
-        for rel in (".git/config", "./.git/config", "sub/../.git/config", ".GIT/config",
-                    ".git /config", "a/.git/hooks/x", ".llm_backup/x", "C:/Windows/x", ".",
-                    "//host/share/x", r"\\host\share\x", "/abs/x", "C:x"):
+        for rel in (
+            ".git/config",
+            "./.git/config",
+            "sub/../.git/config",
+            ".GIT/config",
+            ".git /config",
+            "a/.git/hooks/x",
+            ".llm_backup/x",
+            "C:/Windows/x",
+            ".",
+            "//host/share/x",
+            r"\\host\share\x",
+            "/abs/x",
+            "C:x",
+        ):
             plan = plan_changes(self.root, edit(rel, "", "x\n"))
             self.assertTrue(plan.errors, rel)
 
@@ -99,7 +117,9 @@ class HistoryTest(TempRoot):
     def test_undo_redo_and_conflict(self):
         a = self.write("a.py", "x = 1\n")
         h = History(self.root)
-        plan = plan_changes(self.root, edit("a.py", "x = 1\n", "x = 2\n") + edit("n.py", "", "new\n"))
+        plan = plan_changes(
+            self.root, edit("a.py", "x = 1\n", "x = 2\n") + edit("n.py", "", "new\n")
+        )
         h.commit(plan.changes)
         self.assertEqual((self.root / ".llm_backup" / ".gitignore").read_text(), "*\n")
 
@@ -137,16 +157,16 @@ class HistoryTest(TempRoot):
 
         def flaky(src, dst):
             calls.append(dst)
-            if len(calls) == 2:                       # b.py への適用だけ失敗させる
+            if len(calls) == 2:  # b.py への適用だけ失敗させる
                 raise OSError("disk full")
             return real(src, dst)
 
         with mock.patch("chat_coder.patch.os.replace", side_effect=flaky):
             with self.assertRaises(HistoryError):
                 h.commit(plan.changes)
-        self.assertEqual(a.read_text(), "1\n")        # 先に変えた a.py は戻っている
+        self.assertEqual(a.read_text(), "1\n")  # 先に変えた a.py は戻っている
         self.assertEqual(b.read_text(), "2\n")
-        self.assertFalse(h._undo)                     # 失敗した適用は履歴に載せない
+        self.assertFalse(h._undo)  # 失敗した適用は履歴に載せない
         self.assertTrue(self._no_backup_dirs(h))
         self.assertEqual([p for p in self.root.rglob(".*.tmp")], [])
 
@@ -157,7 +177,7 @@ class HistoryTest(TempRoot):
 
         def flaky(src, dst):
             calls.append(dst)
-            if len(calls) in (2, 3):                  # b.py の適用と、a.py の巻き戻しを失敗させる
+            if len(calls) in (2, 3):  # b.py の適用と、a.py の巻き戻しを失敗させる
                 raise OSError("locked")
             return real(src, dst)
 
@@ -167,8 +187,8 @@ class HistoryTest(TempRoot):
         msg = str(cm.exception)
         self.assertIn("a.py", msg)
         self.assertIn("before", msg)
-        self.assertEqual(a.read_text(), "10\n")       # 戻せなかったので適用後のまま
-        self.assertFalse(self._no_backup_dirs(h))     # 手動復元用にバックアップは残す
+        self.assertEqual(a.read_text(), "10\n")  # 戻せなかったので適用後のまま
+        self.assertFalse(self._no_backup_dirs(h))  # 手動復元用にバックアップは残す
 
     def test_backup_failure_changes_nothing(self):
         a, b, plan = self._two_files()
@@ -241,8 +261,8 @@ class ReplyTest(unittest.TestCase):
         self.assertIn("zzz999", msg)
 
     def test_full_copy_with_fences(self):
-        t = (f"````\n### LLM_LOOP {self.ID}\n説明\n{edit('a.py', 'a\n', 'b\n')}"
-             f"### END {self.ID}\n````\n")
+        block = edit("a.py", "a\n", "b\n")
+        t = f"````\n### LLM_LOOP {self.ID}\n説明\n{block}### END {self.ID}\n````\n"
         buf, _ = ingest(t, self.ID, None)
         body = completed(buf, self.ID)
         self.assertIsNotNone(body)
@@ -250,34 +270,43 @@ class ReplyTest(unittest.TestCase):
         self.assertEqual(extract_prose(body), "説明")
 
     def test_answer_only_is_complete(self):
-        buf, _ = ingest(f"### LLM_LOOP {self.ID}\nはい、そうです。\n### END {self.ID}", self.ID, None)
+        buf, _ = ingest(
+            f"### LLM_LOOP {self.ID}\nはい、そうです。\n### END {self.ID}", self.ID, None
+        )
         self.assertEqual(completed(buf, self.ID), f"### LLM_LOOP {self.ID}\nはい、そうです。\n")
 
     def test_bare_end_line_in_body_does_not_complete(self):
         # コードや説明の中の単独行 `### END` や、別 ID の END で完了扱いにならない
-        text = (f"### LLM_LOOP {self.ID}\n### FILE: doc.md\n<<<<<<< SEARCH\n=======\n"
-                "手順\n### END\n続き\n### END zzz999\nさらに続き\n")
+        text = (
+            f"### LLM_LOOP {self.ID}\n### FILE: doc.md\n<<<<<<< SEARCH\n=======\n"
+            "手順\n### END\n続き\n### END zzz999\nさらに続き\n"
+        )
         buf, _ = ingest(text, self.ID, None)
         self.assertIsNone(completed(buf, self.ID))
 
     def test_end_marker_with_id_keeps_everything_before_it(self):
-        body = (f"### LLM_LOOP {self.ID}\n### FILE: doc.md\n<<<<<<< SEARCH\n=======\n"
-                "手順\n### END\n続き\n>>>>>>> REPLACE\n")
+        body = (
+            f"### LLM_LOOP {self.ID}\n### FILE: doc.md\n<<<<<<< SEARCH\n=======\n"
+            "手順\n### END\n続き\n>>>>>>> REPLACE\n"
+        )
         buf, _ = ingest(body + f"### END {self.ID}\n", self.ID, None)
         self.assertEqual(completed(buf, self.ID), body)
 
     def test_last_end_with_id_wins_and_trailing_text_is_allowed(self):
         text = f"### LLM_LOOP {self.ID}\nA\n### END {self.ID}\nB\n### END {self.ID}\n````\n以上です。\n"
         buf, _ = ingest(text, self.ID, None)
-        self.assertEqual(completed(buf, self.ID), f"### LLM_LOOP {self.ID}\nA\n### END {self.ID}\nB\n")
+        self.assertEqual(
+            completed(buf, self.ID), f"### LLM_LOOP {self.ID}\nA\n### END {self.ID}\nB\n"
+        )
 
     def test_end_id_must_match_whole_id(self):
         buf, _ = ingest(f"### LLM_LOOP {self.ID}\nA\n### END {self.ID}x\n", self.ID, None)
         self.assertIsNone(completed(buf, self.ID))
 
     def test_truncated_then_continued(self):
-        first = (f"### LLM_LOOP {self.ID}\n### FILE: a.py\n<<<<<<< SEARCH\nx = 1\n=======\n"
-                 "x = 2\ny = ")
+        first = (
+            f"### LLM_LOOP {self.ID}\n### FILE: a.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\ny = "
+        )
         buf, _ = ingest(first, self.ID, None)
         self.assertIsNone(completed(buf, self.ID))
         cont = f"````\ny = 3\n>>>>>>> REPLACE\n### END {self.ID}\n````"

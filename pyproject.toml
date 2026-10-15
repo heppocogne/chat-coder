@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chat-coder"
-version = "0.1.0"
+dynamic = ["version"]
 description = "コーディングエージェントが使えない環境で、LLM チャットをエージェント代わりにする半自動ループ"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -13,5 +13,20 @@ dependencies = []
 [project.scripts]
 chat-coder = "chat_coder.cli:main"
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.17.0",
+]
+
 [tool.setuptools]
 packages = ["chat_coder"]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E9", "F", "I"]
+
+[tool.setuptools.dynamic]
+version = {attr = "chat_coder.__version__"}

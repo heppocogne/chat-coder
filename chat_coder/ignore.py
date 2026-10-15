@@ -44,7 +44,7 @@ uv.lock
 """
 
 MAX_PATTERN_LEN = 256
-PROTECTED_DIRS = {".git", ".llm_backup"}  #どのルールでも再包含できない(常に除外)
+PROTECTED_DIRS = {".git", ".llm_backup"}  # どのルールでも再包含できない(常に除外)
 
 _LLMIGNORE_HEADER = """\
 # chat-coder の除外ルール(.gitignore と同じ書式)。
@@ -74,9 +74,7 @@ def ensure_llmignore(root):
     if path.exists():
         return False
     try:
-        path.write_bytes(
-            (_LLMIGNORE_HEADER + DEFAULT_IGNORE + _LLMIGNORE_HINT).encode("utf-8")
-        )
+        path.write_bytes((_LLMIGNORE_HEADER + DEFAULT_IGNORE + _LLMIGNORE_HINT).encode("utf-8"))
     except OSError:
         return False
     return True
@@ -149,7 +147,7 @@ def parse(text, base=""):
             line = line.rstrip("/")
         if not line:
             continue
-        if len(line) > MAX_PATTERN_LEN:          # 極端に長いパターンは正規表現が重くなるので無視
+        if len(line) > MAX_PATTERN_LEN:  # 極端に長いパターンは正規表現が重くなるので無視
             continue
         anchored = "/" in line
         line = line.lstrip("/")
@@ -197,9 +195,7 @@ class IgnoreMatcher:
             return True
         for i in range(len(parts)):
             last = i == len(parts) - 1
-            if self._match(
-                "/".join(parts[: i + 1]), parts[:i], is_dir if last else True
-            ):
+            if self._match("/".join(parts[: i + 1]), parts[:i], is_dir if last else True):
                 return True
         return False
 

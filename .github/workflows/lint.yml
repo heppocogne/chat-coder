@@ -1,0 +1,21 @@
+name: Lint
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4
+        with:
+          args: check
+      - uses: astral-sh/ruff-action@v4
+        with:
+          args: format --check

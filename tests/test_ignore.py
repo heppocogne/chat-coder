@@ -25,8 +25,16 @@ class MatcherTest(unittest.TestCase):
 
     def test_defaults(self):
         m = self.matcher()
-        for rel in ("node_modules/x.js", "a/node_modules/x.js", ".git/config", ".llm_backup/a/b",
-                    "src/__pycache__/m.pyc", "yarn.lock", "sub/package-lock.json", ".vscode/s.json"):
+        for rel in (
+            "node_modules/x.js",
+            "a/node_modules/x.js",
+            ".git/config",
+            ".llm_backup/a/b",
+            "src/__pycache__/m.pyc",
+            "yarn.lock",
+            "sub/package-lock.json",
+            ".vscode/s.json",
+        ):
             self.assertTrue(m.is_ignored(rel), rel)
         for rel in ("src/main.py", ".env", "build.py", "README.md"):
             self.assertFalse(m.is_ignored(rel), rel)
@@ -58,14 +66,14 @@ class MatcherTest(unittest.TestCase):
         m = self.matcher("tmp/\n")
         self.assertTrue(m.is_ignored("tmp/a.txt"))
         self.assertTrue(m.is_ignored("sub/tmp/a.txt"))
-        self.assertFalse(m.is_ignored("tmp"))            # 同名のファイルは対象外
+        self.assertFalse(m.is_ignored("tmp"))  # 同名のファイルは対象外
         self.assertTrue(m.is_ignored("tmp", is_dir=True))
 
     def test_negation_and_parent_exclusion(self):
         m = self.matcher("*.log\n!keep.log\nbuild2/\n!build2/x.txt\n")
         self.assertTrue(m.is_ignored("a.log"))
         self.assertFalse(m.is_ignored("keep.log"))
-        self.assertTrue(m.is_ignored("build2/x.txt"))    # 親が除外されていれば再包含できない
+        self.assertTrue(m.is_ignored("build2/x.txt"))  # 親が除外されていれば再包含できない
 
     def test_character_class_question_and_escape(self):
         m = self.matcher("f[0-9].txt\nq?.py\n\\#hash.txt\n")
@@ -92,13 +100,13 @@ class MatcherTest(unittest.TestCase):
     def test_llmignore_is_evaluated_after_gitignore(self):
         m = self.matcher("*.sql\n", **{".llmignore": "!data.sql\nsecret/\n"})
         self.assertTrue(m.is_ignored("a.sql"))
-        self.assertFalse(m.is_ignored("data.sql"))       # .llmignore の否定が勝つ
+        self.assertFalse(m.is_ignored("data.sql"))  # .llmignore の否定が勝つ
         self.assertTrue(m.is_ignored("secret/k.txt"))
 
     def test_llmignore_replaces_builtin_defaults(self):
         m = self.matcher(**{".llmignore": "*.tmp\n"})
         self.assertTrue(m.is_ignored("a.tmp"))
-        self.assertFalse(m.is_ignored("node_modules/x.js"))   # 既定の行を消せば送られる
+        self.assertFalse(m.is_ignored("node_modules/x.js"))  # 既定の行を消せば送られる
         self.assertFalse(m.is_ignored("yarn.lock"))
 
     def test_git_and_backup_dirs_always_ignored(self):
@@ -116,11 +124,11 @@ class MatcherTest(unittest.TestCase):
         m = IgnoreMatcher(self.root)
         self.assertTrue(m.is_ignored("node_modules/x.js"))
         self.assertTrue(m.is_ignored("yarn.lock"))
-        self.assertTrue(m.is_ignored(".env"))            # 秘密情報の既定行
+        self.assertTrue(m.is_ignored(".env"))  # 秘密情報の既定行
         self.assertTrue(m.is_ignored("id_rsa"))
-        self.assertFalse(m.is_ignored(".env.local"))     # .env.* は既定ではコメントアウト
+        self.assertFalse(m.is_ignored(".env.local"))  # .env.* は既定ではコメントアウト
         path.write_text("# 空にした\n", encoding="utf-8")
-        self.assertFalse(ensure_llmignore(self.root))    # 既存は上書きしない
+        self.assertFalse(ensure_llmignore(self.root))  # 既存は上書きしない
         self.assertEqual(path.read_text(encoding="utf-8"), "# 空にした\n")
 
     def test_uncommenting_secret_hint_works(self):
@@ -132,7 +140,7 @@ class MatcherTest(unittest.TestCase):
         self.assertFalse(m.is_ignored(".env.local"))
 
     def test_unreadable_llmignore_falls_back_to_defaults(self):
-        (self.root / ".llmignore").mkdir()          # 読めない形(ディレクトリ)にしておく
+        (self.root / ".llmignore").mkdir()  # 読めない形(ディレクトリ)にしておく
         m = IgnoreMatcher(self.root)
         self.assertTrue(m.is_ignored("node_modules/x.js"))
         self.assertTrue(m.is_ignored(".git/config"))

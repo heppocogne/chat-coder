@@ -1,4 +1,5 @@
 """Windows クリップボード(ctypes で Win32 API を直接呼ぶ。標準ライブラリのみ)"""
+
 import ctypes
 import time
 from ctypes import wintypes

@@ -131,6 +131,17 @@ class MatcherTest(unittest.TestCase):
         self.assertTrue(m.is_ignored(".env"))
         self.assertFalse(m.is_ignored(".env.local"))
 
+    def test_unreadable_llmignore_falls_back_to_defaults(self):
+        (self.root / ".llmignore").mkdir()          # 読めない形(ディレクトリ)にしておく
+        m = IgnoreMatcher(self.root)
+        self.assertTrue(m.is_ignored("node_modules/x.js"))
+        self.assertTrue(m.is_ignored(".git/config"))
+
+    def test_overlong_pattern_is_skipped(self):
+        m = self.matcher("*" * 300 + "\n*.ok\n")
+        self.assertFalse(m.is_ignored("a" * 300))
+        self.assertTrue(m.is_ignored("a.ok"))
+
     def test_invalid_pattern_is_skipped(self):
         m = self.matcher("[\n*.ok\n")
         self.assertTrue(m.is_ignored("a.ok"))

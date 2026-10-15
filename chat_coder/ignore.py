@@ -43,7 +43,8 @@ pnpm-lock.yaml
 uv.lock
 """
 
-PROTECTED_DIRS = {".git", ".llm_backup"}  # どのルールでも再包含できない(常に除外)
+MAX_PATTERN_LEN = 256
+PROTECTED_DIRS = {".git", ".llm_backup"}  #どのルールでも再包含できない(常に除外)
 
 _LLMIGNORE_HEADER = """\
 # chat-coder の除外ルール(.gitignore と同じ書式)。
@@ -148,6 +149,8 @@ def parse(text, base=""):
             line = line.rstrip("/")
         if not line:
             continue
+        if len(line) > MAX_PATTERN_LEN:          # 極端に長いパターンは正規表現が重くなるので無視
+            continue
         anchored = "/" in line
         line = line.lstrip("/")
         body = _to_regex(line)
@@ -161,10 +164,11 @@ def parse(text, base=""):
 
 
 def _read(path):
+    """ファイルの内容。読めなければ None(呼び出し側で安全な側に倒す)"""
     try:
         return path.read_bytes().decode("utf-8-sig", errors="replace")
     except OSError:
-        return ""
+        return None
 
 
 class IgnoreMatcher:
@@ -176,13 +180,15 @@ class IgnoreMatcher:
     def __init__(self, root):
         self.root = Path(root)
         path = self.root / LLMIGNORE
-        self._llm = parse(_read(path) if path.is_file() else DEFAULT_IGNORE)
+        # .llmignore が無い・読めない場合は既定ルールで動く(除外ルールが空になる fail-open を避ける)
+        text = _read(path) if path.is_file() else None
+        self._llm = parse(text if text is not None else DEFAULT_IGNORE)
         self._dirs = {}
 
     def _gitignore(self, base):
         if base not in self._dirs:
             d = self.root.joinpath(*base.split("/")) if base else self.root
-            self._dirs[base] = parse(_read(d / GITIGNORE), base)
+            self._dirs[base] = parse(_read(d / GITIGNORE) or "", base)
         return self._dirs[base]
 
     def is_ignored(self, rel, is_dir=False):

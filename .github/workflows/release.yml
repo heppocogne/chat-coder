@@ -35,6 +35,7 @@ jobs:
           mkdir -p build dist
           cp -r chat_coder build/chat_coder
           find build -name __pycache__ -type d -prune -exec rm -rf {} +
+          rm build/chat_coder/__main__.py
           python -m zipapp build -m "chat_coder.cli:main" -p "/usr/bin/env python3" -c -o dist/chat-coder.pyz
       - name: Smoke test
         run: python dist/chat-coder.pyz --help

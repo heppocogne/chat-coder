@@ -72,18 +72,35 @@ def set(text):
     if not h:
         raise OSError("クリップボード用のメモリを確保できません")
     p = kernel32.GlobalLock(h)
-    ctypes.memmove(p, data, len(data))
-    kernel32.GlobalUnlock(h)
+    if not p:
+        err = ctypes.get_last_error()
+        kernel32.GlobalFree(h)
+        raise ctypes.WinError(err)
+    try:
+        ctypes.memmove(p, data, len(data))
+    finally:
+        # GlobalUnlock は 0 を返しても、ロックカウントが 0 になっただけで
+        # 成功のことがある。GetLastError() が NO_ERROR 以外の時だけ失敗とみなす
+        ctypes.set_last_error(0)
+        unlocked = kernel32.GlobalUnlock(h)
+        unlock_err = ctypes.get_last_error()
+    if not unlocked and unlock_err != 0:
+        kernel32.GlobalFree(h)
+        raise ctypes.WinError(unlock_err)
     try:
         _open()
     except OSError:
         kernel32.GlobalFree(h)
         raise
     try:
-        user32.EmptyClipboard()
-        if not user32.SetClipboardData(CF_UNICODETEXT, h):
+        if not user32.EmptyClipboard():
+            err = ctypes.get_last_error()
             kernel32.GlobalFree(h)
-            raise OSError("クリップボードへの書き込みに失敗")
+            raise ctypes.WinError(err)
+        if not user32.SetClipboardData(CF_UNICODETEXT, h):
+            err = ctypes.get_last_error()
+            kernel32.GlobalFree(h)
+            raise ctypes.WinError(err)
     finally:
         user32.CloseClipboard()
 

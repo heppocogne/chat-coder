@@ -93,7 +93,9 @@ def read_prompt(note):
     if note:
         print("  ※ 前回の適用エラーを一緒に送ります。空行のみでエラーだけを再送")
     else:
-        print("  コマンド: /undo /redo /copy(pack を再コピー) /wait(コピー待ちを再開) /q  ・何も入力せず空行で終了")
+        print(
+            "  コマンド: /undo /redo /copy(pack を再コピー) /wait(コピー待ちを再開) /q  ・何も入力せず空行で終了"
+        )
     lines = []
     while True:
         try:
@@ -145,7 +147,9 @@ def wait_reply(pack_id, seq0, state):
                     state["buf"] = None
                     return body
                 if was_none:
-                    print(f"応答が途中で切れているようです(末尾の `### END {pack_id}` がありません)。")
+                    print(
+                        f"応答が途中で切れているようです(末尾の `### END {pack_id}` がありません)。"
+                    )
                     print(
                         "チャットで「続き」と送り、続きをコピーしてください。(Ctrl+Q でここまでを反映)"
                     )

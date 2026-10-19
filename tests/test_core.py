@@ -336,3 +336,41 @@ class AutosendKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_commit_aborts_if_file_changed_after_planning(self):
+        a, b, plan = self._two_files()
+        b.write_text("外部で変更\n", encoding="utf-8")  # 計画後に変更された
+        h = History(self.root)
+        with self.assertRaises(HistoryError) as cm:
+            h.commit(plan.changes)
+        self.assertEqual(cm.exception.conflicts, ["b.py"])
+        self.assertEqual((a.read_text(), b.read_text()), ("1\n", "外部で変更\n"))
+        self.assertFalse(h._undo)
+        self.assertTrue(self._no_backup_dirs(h))
+
+    def test_undo_aborts_if_file_changed_after_check(self):
+        a, b, plan = self._two_files()
+        h = History(self.root)
+        h.commit(plan.changes)
+        real = h._conflicts
+
+        def check_then_edit(entry, state):  # 確認の直後に外部で変更される
+            out = real(entry, state)
+            b.write_text("確認後の変更\n", encoding="utf-8")
+            return out
+
+        with mock.patch.object(h, "_conflicts", side_effect=check_then_edit):
+            with self.assertRaises(HistoryError) as cm:
+                h.undo()
+        self.assertEqual(cm.exception.conflicts, ["b.py"])
+        self.assertEqual((a.read_text(), b.read_text()), ("10\n", "確認後の変更\n"))
+        self.assertEqual(len(h._undo), 1)
+
+    def test_force_undo_saves_overwritten_content(self):
+        a, b, plan = self._two_files()
+        h = History(self.root)
+        entry = h.commit(plan.changes)
+        a.write_text("手で編集\n", encoding="utf-8")
+        h.undo(force=True)
+        self.assertEqual(a.read_text(), "1\n")
+        self.assertEqual((entry.dir / "overwritten" / "a.py").read_text(), "手で編集\n")

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import __version__, autosend, clipboard
 from .ignore import LLMIGNORE, ensure_llmignore
-from .patch import History, HistoryError, plan_changes
+from .patch import BACKUP_DIRNAME, History, HistoryError, plan_changes
 from .project import WARN_CHARS, build_pack, collect_files
 from .reply import completed, extract_prose, ingest
 
@@ -88,6 +88,12 @@ def wait_reply(pack_id, seq0):
                 return buf
         print("中止しました。")
         return None
+
+
+def _save_txt(pack, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(pack)
 
 
 def _stat(change):
@@ -169,10 +175,19 @@ def main(argv=None):
     )
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("root", nargs="?", default=".", help="プロジェクトのルート(省略時はカレント)")
-    ap.add_argument(
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument(
         "--window",
         metavar="TITLE_RE",
         help="チャット画面のウィンドウタイトル(正規表現)。指定すると pywinauto で自動入力する",
+    )
+    mode.add_argument(
+        "--txt",
+        nargs="?",
+        const="",
+        metavar="PATH",
+        help="pack を txt ファイルに書き出す(省略時は .llm_backup/pack.txt)。"
+        "自動入力はせず、このファイルをチャットに添付して送る(クリップボードにも入ります)",
     )
     ap.add_argument(
         "--type",
@@ -188,6 +203,7 @@ def main(argv=None):
     root = Path(args.root).resolve()
     if not root.is_dir():
         sys.exit(f"フォルダが見つかりません: {root}")
+    txt_path = Path(args.txt) if args.txt else root / BACKUP_DIRNAME / "pack.txt"
     try:
         sys.stdout.reconfigure(errors="replace")
     except Exception:
@@ -233,16 +249,27 @@ def main(argv=None):
             print(
                 "  ※ 文字数が多いです。チャットの入力上限に注意(超える場合はファイルを絞るか添付で渡す)。"
             )
-        sent = False
-        if args.window:
+        if args.txt is not None:
             try:
-                autosend.send(pack, args.window, args.type, not args.no_submit)
-                sent = True
-                print("チャット画面に自動入力しました。")
-            except Exception as e:
-                print(f"自動入力に失敗しました({type(e).__name__}: {e})。")
-        if not sent:
-            print("チャットに貼り付けて送信してください。")
+                _save_txt(pack, txt_path)
+                print(f"pack を書き出しました: {txt_path}")
+                print(
+                    "チャットにこのファイルを添付して送信してください(クリップボードにも入っています)。"
+                )
+            except OSError as e:
+                print(f"ファイルに書き出せません: {e}")
+                print("チャットに貼り付けて送信してください。")
+        else:
+            sent = False
+            if args.window:
+                try:
+                    autosend.send(pack, args.window, args.type, not args.no_submit)
+                    sent = True
+                    print("チャット画面に自動入力しました。")
+                except Exception as e:
+                    print(f"自動入力に失敗しました({type(e).__name__}: {e})。")
+            if not sent:
+                print("チャットに貼り付けて送信してください。")
         reply = wait_reply(pack_id, seq0)
         if reply is None:
             continue

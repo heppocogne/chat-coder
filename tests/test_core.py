@@ -325,5 +325,14 @@ class ReplyTest(unittest.TestCase):
         self.assertTrue(msg)
 
 
+class AutosendKeys(unittest.TestCase):
+    def test_to_keys_escapes_specials_and_whitespace(self):
+        from chat_coder.autosend import to_keys
+
+        self.assertEqual(to_keys("    x = {1}"), "{SPACE}" * 4 + "x{SPACE}={SPACE}{{}1{}}")
+        self.assertEqual(to_keys("\tf(a)+b"), "{TAB}f{(}a{)}{+}b")
+        self.assertEqual(to_keys("日本語"), "日本語")
+
+
 if __name__ == "__main__":
     unittest.main()

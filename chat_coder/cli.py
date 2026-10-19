@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__, clipboard
+from . import __version__, autosend, clipboard
 from .ignore import LLMIGNORE, ensure_llmignore
 from .patch import History, HistoryError, plan_changes
 from .project import WARN_CHARS, build_pack, collect_files
@@ -169,6 +169,21 @@ def main(argv=None):
     )
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("root", nargs="?", default=".", help="プロジェクトのルート(省略時はカレント)")
+    ap.add_argument(
+        "--window",
+        metavar="TITLE_RE",
+        help="チャット画面のウィンドウタイトル(正規表現)。指定すると pywinauto で自動入力する",
+    )
+    ap.add_argument(
+        "--type",
+        action="store_true",
+        help="--window と併用。貼り付けではなく1文字ずつ入力する(貼り付けで空白が崩れる場合)",
+    )
+    ap.add_argument(
+        "--no-submit",
+        action="store_true",
+        help="--window と併用。入力だけして送信(Enter)はしない",
+    )
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
     if not root.is_dir():
@@ -213,13 +228,21 @@ def main(argv=None):
             print(f"クリップボードに書き込めません: {e}")
             continue
         seq0 = clipboard.seq()
-        print(
-            f"クリップボードにコピーしました({len(pack):,} 文字)。チャットに貼り付けて送信してください。"
-        )
+        print(f"クリップボードにコピーしました({len(pack):,} 文字)。")
         if len(pack) > WARN_CHARS:
             print(
                 "  ※ 文字数が多いです。チャットの入力上限に注意(超える場合はファイルを絞るか添付で渡す)。"
             )
+        sent = False
+        if args.window:
+            try:
+                autosend.send(pack, args.window, args.type, not args.no_submit)
+                sent = True
+                print("チャット画面に自動入力しました。")
+            except Exception as e:
+                print(f"自動入力に失敗しました({type(e).__name__}: {e})。")
+        if not sent:
+            print("チャットに貼り付けて送信してください。")
         reply = wait_reply(pack_id, seq0)
         if reply is None:
             continue

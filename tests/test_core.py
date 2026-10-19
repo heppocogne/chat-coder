@@ -113,6 +113,117 @@ class PatchTest(TempRoot):
         self.assertEqual((plan.errors, plan.changes, plan.n_ops), ([], [], 0))
 
 
+class ParseTest(TempRoot):
+    def plan(self, reply):
+        return plan_changes(self.root, reply)
+
+    def test_tolerates_marker_variations(self):
+        self.write("a.py", "x = 1\ny = 2\n")
+        reply = (
+            "**FILE: `a.py`**\n\n```python\n<<<<<<<< search\nx = 1\n=========\nx = 9\n"
+            ">>>>>>>> Replace\n```\n"
+        )
+        plan = self.plan(reply)
+        self.assertEqual(plan.errors, [])
+        self.assertEqual(plan.changes[0].new_text, "x = 9\ny = 2\n")
+
+    def test_indented_block_is_dedented(self):
+        self.write("a.py", "x = 1\n")
+        reply = "### FILE: a.py\n  <<<<<<< SEARCH\n  x = 1\n  =======\n  x = 2\n  >>>>>>> REPLACE\n"
+        plan = self.plan(reply)
+        self.assertEqual(plan.errors, [])
+        self.assertEqual(plan.changes[0].new_text, "x = 2\n")
+
+    def test_second_block_may_omit_file_line(self):
+        self.write("a.py", "x = 1\ny = 2\n")
+        reply = (
+            edit("a.py", "x = 1\n", "x = 5\n")
+            + "\n<<<<<<< SEARCH\ny = 2\n=======\ny = 6\n>>>>>>> REPLACE\n"
+        )
+        plan = self.plan(reply)
+        self.assertEqual(plan.errors, [])
+        self.assertEqual(plan.changes[0].new_text, "x = 5\ny = 6\n")
+
+    def test_search_without_file_line_is_reported(self):
+        self.write("a.py", "x = 1\n")
+        plan = self.plan("説明\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n")
+        self.assertEqual(len(plan.errors), 1)
+        self.assertIn("[形式]", plan.errors[0])
+        self.assertIn("### FILE", plan.errors[0])
+
+    def test_truncated_reports_line_and_reason(self):
+        self.write("a.py", "x = 1\n")
+        plan = self.plan("### FILE: a.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n")
+        self.assertIn("[形式]", plan.errors[0])
+        self.assertIn("REPLACE", plan.errors[0])
+        self.assertIn("途中で切れ", plan.errors[0])
+
+    def test_unclosed_block_followed_by_next_block(self):
+        self.write("a.py", "x = 1\n")
+        reply = "### FILE: a.py\n<<<<<<< SEARCH\nx = 1\n" + edit("a.py", "x = 1\n", "x = 2\n")
+        plan = self.plan(reply)
+        self.assertTrue(any("次の SEARCH が始まっている" in e for e in plan.errors))
+
+    def test_mismatch_points_at_differing_line(self):
+        self.write("a.py", "def f():\n    return 1\n\ndef g():\n    return 2\n")
+        plan = self.plan(edit("a.py", "def g():\n    return 3\n", "pass\n"))
+        (e,) = plan.errors
+        self.assertIn("[適用] a.py(ブロック1", e)
+        self.assertIn("4 行目付近", e)
+        self.assertIn("return 3", e)
+        self.assertIn("return 2", e)
+
+    def test_mismatch_indentation_only(self):
+        self.write("a.py", "if x:\n    y = 1\n")
+        plan = self.plan(edit("a.py", "if x:\n  y = 1\n", "pass\n"))
+        self.assertIn("インデント", plan.errors[0])
+
+    def test_mismatch_unknown_code(self):
+        self.write("a.py", "x = 1\n")
+        plan = self.plan(edit("a.py", "totally_unknown()\n", "pass\n"))
+        self.assertIn("存在しない行", plan.errors[0])
+
+    def test_multiple_matches_lists_lines(self):
+        self.write("a.py", "pass\nx\npass\n")
+        plan = self.plan(edit("a.py", "pass\n", "ok\n"))
+        self.assertIn("2 箇所", plan.errors[0])
+        self.assertIn("行 1, 3", plan.errors[0])
+
+    def test_later_block_sees_earlier_edit(self):
+        self.write("a.py", "x = 1\n")
+        reply = edit("a.py", "x = 1\n", "x = 2\n") + edit("a.py", "x = 1\n", "x = 3\n")
+        plan = self.plan(reply)
+        self.assertIn("ブロック2", plan.errors[0])
+
+    def test_elided_search(self):
+        body = "def f():\n    a = 1\n    b = 2\n    c = 3\n    return a\n\ndef g():\n    return 0\n"
+        self.write("a.py", body)
+        reply = edit(
+            "a.py", "def f():\n    a = 1\n...\n    return a\n", "def f():\n    return 42\n"
+        )
+        plan = self.plan(reply)
+        self.assertEqual(plan.errors, [])
+        self.assertEqual(
+            plan.changes[0].new_text, "def f():\n    return 42\n\ndef g():\n    return 0\n"
+        )
+
+    def test_elided_search_not_found_and_ambiguous(self):
+        self.write("a.py", "begin\nx\nend\nbegin\ny\nend\n")
+        plan = self.plan(edit("a.py", "begin\n...\nend\n", "z\n"))
+        self.assertIn("2 箇所", plan.errors[0])
+        plan = self.plan(edit("a.py", "begin\n...\nnothing\n", "z\n"))
+        self.assertIn("`...`", plan.errors[0])
+
+    def test_literal_ellipsis_line_still_matches_exactly(self):
+        self.write("a.py", "def f():\n    ...\n")
+        plan = self.plan(edit("a.py", "    ...\n", "    pass\n"))
+        self.assertEqual(plan.errors, [])
+
+    def test_prose_excludes_blocks_even_with_loose_markers(self):
+        t = "説明\n**FILE: a.py**\n<<<<<<<< SEARCH\na\n=======\nb\n>>>>>>>> REPLACE\n以上"
+        self.assertEqual(extract_prose(t), "説明\n以上")
+
+
 class HistoryTest(TempRoot):
     def test_undo_redo_and_conflict(self):
         a = self.write("a.py", "x = 1\n")
@@ -241,6 +352,7 @@ class ProjectTest(TempRoot):
         self.assertTrue(pack.startswith(PACK_MARK))
         self.assertIn("### LLM_LOOP abc123", pack)
         self.assertIn("### END abc123", pack)
+        self.assertIn("# 応答の書式(再掲)", pack.split("##### END FILE")[-1])
         self.assertIn("##### BEGIN FILE: a.py", pack)
 
 
@@ -259,6 +371,20 @@ class ReplyTest(unittest.TestCase):
         buf, msg = ingest("### LLM_LOOP zzz999\n### END zzz999\n", self.ID, None)
         self.assertIsNone(buf)
         self.assertIn("zzz999", msg)
+
+    def test_previous_id_is_accepted_for_current_pack(self):
+        text = "### LLM_LOOP old111\n説明\n### END old111\n"
+        buf, msg = ingest(text, self.ID, None, ["old111"])
+        self.assertIn("old111", msg)
+        self.assertEqual(completed(buf, self.ID, ["old111"]), "### LLM_LOOP old111\n説明\n")
+
+    def test_unknown_id_still_skipped_with_old_ids(self):
+        buf, _ = ingest("### LLM_LOOP zzz999\nx\n### END zzz999\n", self.ID, None, ["old111"])
+        self.assertIsNone(buf)
+
+    def test_mixed_ids_header_current_end_old(self):
+        buf, _ = ingest(f"### LLM_LOOP {self.ID}\nA\n### END old111\n", self.ID, None, ["old111"])
+        self.assertEqual(completed(buf, self.ID, ["old111"]), f"### LLM_LOOP {self.ID}\nA\n")
 
     def test_full_copy_with_fences(self):
         block = edit("a.py", "a\n", "b\n")

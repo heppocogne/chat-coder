@@ -15,7 +15,8 @@ from .patch import BACKUP_DIRNAME, History, HistoryError, plan_changes
 from .project import WARN_CHARS, build_pack, collect_files
 from .reply import completed, extract_prose, ingest
 
-COMMANDS = {"/undo", "/undo!", "/redo", "/redo!", "/copy", "/q"}
+COMMANDS = {"/undo", "/undo!", "/redo", "/redo!", "/copy", "/wait", "/q"}
+CTRL_Q = "\x11"
 SHOW_SKIPPED = 15
 
 
@@ -28,12 +29,71 @@ def beep():
         pass
 
 
+class _KeyPoller:
+    """待機中のキー入力(Ctrl+Q)を非ブロッキングで読む。使えない環境では何も返さない"""
+
+    def __enter__(self):
+        self._old = None
+        try:
+            import msvcrt  # noqa: F401
+
+            self._win = True
+        except ImportError:
+            self._win = False
+            try:
+                import termios
+                import tty
+
+                self._fd = sys.stdin.fileno()
+                self._old = termios.tcgetattr(self._fd)
+                tty.setcbreak(self._fd)
+            except Exception:
+                self._old = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._old is not None:
+            import termios
+
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+
+    @property
+    def available(self):
+        return self._win or self._old is not None
+
+    def pressed(self):
+        """溜まっているキーに Ctrl+Q があれば True"""
+        try:
+            if self._win:
+                import msvcrt
+
+                hit = False
+                while msvcrt.kbhit():
+                    if msvcrt.getwch() == CTRL_Q:
+                        hit = True
+                return hit
+            if self._old is not None:
+                import select
+
+                hit = False
+                while select.select([sys.stdin], [], [], 0)[0]:
+                    ch = sys.stdin.read(1)
+                    if not ch:
+                        break
+                    if ch == CTRL_Q:
+                        hit = True
+                return hit
+        except Exception:
+            pass
+        return False
+
+
 def read_prompt(note):
     print("\n指示を入力(空行で確定)")
     if note:
         print("  ※ 前回の適用エラーを一緒に送ります。空行のみでエラーだけを再送")
     else:
-        print("  コマンド: /undo /redo /copy(pack を再コピー) /q  ・何も入力せず空行で終了")
+        print("  コマンド: /undo /redo /copy(pack を再コピー) /wait(コピー待ちを再開) /q  ・何も入力せず空行で終了")
     lines = []
     while True:
         try:
@@ -51,43 +111,61 @@ def read_prompt(note):
     return "\n".join(lines)
 
 
-def wait_reply(pack_id, seq0):
-    """応答が揃うまで待って本文を返す。中止したら None"""
-    print("チャットの応答をコピーするのを待っています… (Ctrl+C で中止)")
-    buf = None
-    try:
+def wait_reply(pack_id, seq0, state):
+    """応答が揃うまで待って本文を返す。Ctrl+Q で中止したら None
+
+    state["buf"] に途中までの応答を保持する(/wait で再開したとき引き継ぐ)。
+    seq0 が None のときは、現在のクリップボードも応答の候補として扱う。
+    """
+    print("チャットの応答をコピーするのを待っています… (Ctrl+Q で中止、/wait で再開)")
+    buf = state.get("buf")
+    with _KeyPoller() as keys:
         while True:
-            time.sleep(0.5)
-            s = clipboard.seq()
-            if s == seq0:
-                continue
-            seq0 = s
             try:
-                text = clipboard.get()
-            except OSError:
-                continue
-            was_none = buf is None
-            buf, msg = ingest(text, pack_id, buf)
-            if msg:
-                print(msg)
-            if buf is None:
-                continue
-            body = completed(buf, pack_id)
-            if body is not None:
-                return body
-            if was_none:
-                print(f"応答が途中で切れているようです(末尾の `### END {pack_id}` がありません)。")
-                print(
-                    "チャットで「続き」と送り、続きをコピーしてください。(Ctrl+C でここまでを反映)"
-                )
-    except KeyboardInterrupt:
-        print()
-        if buf is not None:
-            ans = input("ここまでの内容で反映しますか? [y/N] ").strip().lower()
-            if ans == "y":
-                return buf
-        print("中止しました。")
-        return None
+                time.sleep(0.5)
+                if keys.pressed():
+                    break
+                s = clipboard.seq()
+                if s == seq0:
+                    continue
+                seq0 = s
+                try:
+                    text = clipboard.get()
+                except OSError:
+                    continue
+                was_none = buf is None
+                buf, msg = ingest(text, pack_id, buf)
+                state["buf"] = buf
+                if msg:
+                    print(msg)
+                if buf is None:
+                    continue
+                body = completed(buf, pack_id)
+                if body is not None:
+                    state["buf"] = None
+                    return body
+                if was_none:
+                    print(f"応答が途中で切れているようです(末尾の `### END {pack_id}` がありません)。")
+                    print(
+                        "チャットで「続き」と送り、続きをコピーしてください。(Ctrl+Q でここまでを反映)"
+                    )
+            except KeyboardInterrupt:
+                # Ctrl+C はコピー操作と被るので、Ctrl+Q が使えるなら無視する
+                if keys.available:
+                    continue
+                break
+    return _abort(state, buf)
+
+
+def _abort(state, buf):
+    print()
+    if buf is not None:
+        ans = input("ここまでの内容で反映しますか? [y/N] ").strip().lower()
+        if ans == "y":
+            state["buf"] = None
+            return buf
+    print("中止しました。コピー待ちを再開するには /wait と入力してください。")
+    return None
 
 
 def _save_txt(pack, path):
@@ -219,6 +297,7 @@ def main(argv=None):
     history = History(root)
     note = ""
     last = None  # (pack, pack_id)
+    state = {}  # 待機中の途中経過(/wait で再開するため保持)
     while True:
         instr = read_prompt(note)
         if instr is None:  # Ctrl+C: 入力だけ取り消す
@@ -226,6 +305,15 @@ def main(argv=None):
         cmd = instr.strip().lower()
         if cmd == "/q" or (not instr and not note):
             break
+        if cmd == "/wait":
+            if last is None:
+                print("まだ pack を作っていません。")
+                continue
+            reply = wait_reply(last[1], None, state)
+            if reply is not None:
+                beep()
+                note = _handle_reply(root, history, reply)
+            continue
         if cmd in COMMANDS and cmd != "/copy":
             _history_command(history, cmd)
             continue
@@ -238,6 +326,7 @@ def main(argv=None):
             pack, pack_id = _pack(root, instr or "前回の適用結果を踏まえて修正してください。", note)
             note = ""
             last = (pack, pack_id)
+            state = {}
         try:
             clipboard.set(pack)
         except OSError as e:
@@ -270,7 +359,7 @@ def main(argv=None):
                     print(f"自動入力に失敗しました({type(e).__name__}: {e})。")
             if not sent:
                 print("チャットに貼り付けて送信してください。")
-        reply = wait_reply(pack_id, seq0)
+        reply = wait_reply(pack_id, seq0, state)
         if reply is None:
             continue
         beep()

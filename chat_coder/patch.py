@@ -289,7 +289,8 @@ class History:
                 if not failed:
                     shutil.rmtree(bdir, ignore_errors=True)
                     raise HistoryError(
-                        "適用直前にファイルが外部で変更されたため、何も変更せず中止しました", [e.rel]
+                        "適用直前にファイルが外部で変更されたため、何も変更せず中止しました",
+                        [e.rel],
                     )
                 e = f"{e.rel} が外部で変更された"
             if failed:
@@ -383,7 +384,9 @@ class History:
                 except OSError:
                     failed.append(str(p.relative_to(self.root)))
             if failed:
-                raise HistoryError(f"途中で失敗し、次のファイルを元に戻せませんでした: {', '.join(failed)}")
+                raise HistoryError(
+                    f"途中で失敗し、次のファイルを元に戻せませんでした: {', '.join(failed)}"
+                )
             if isinstance(e, _Conflict):
                 raise HistoryError(
                     "確認後にファイルが外部で変更されたため、何も変更せず中止しました", [e.rel]

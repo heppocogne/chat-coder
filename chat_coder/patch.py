@@ -196,6 +196,12 @@ class Entry:
     has_after: set
 
 
+class _Conflict(Exception):
+    def __init__(self, rel):
+        super().__init__(rel)
+        self.rel = rel
+
+
 def _put(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -214,6 +220,16 @@ def _put_atomic(path, data):
         except OSError:
             pass
         raise
+
+
+def _read(path):
+    """ファイルの現在の内容。存在しなければ None"""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except IsADirectoryError:
+        return b"\0<directory>"  # どの期待値とも一致させない
 
 
 class History:
@@ -255,10 +271,13 @@ class History:
             )
 
         # 2. 適用する。失敗したら、それまでに適用したファイルを逆順に戻す
+        # 計画作成後に外部で変更されたファイルを上書きしないよう、書き込む直前にファイルごとに再確認する
         done = []
         try:
             for c in changes:
                 p = self.root / c.rel
+                if _read(p) != c.old_bytes:
+                    raise _Conflict(c.rel)
                 if c.new_bytes is None:
                     p.unlink()
                 else:
@@ -266,6 +285,13 @@ class History:
                 done.append(c)
         except BaseException as e:
             failed = self._rollback(done)
+            if isinstance(e, _Conflict):
+                if not failed:
+                    shutil.rmtree(bdir, ignore_errors=True)
+                    raise HistoryError(
+                        "適用直前にファイルが外部で変更されたため、何も変更せず中止しました", [e.rel]
+                    )
+                e = f"{e.rel} が外部で変更された"
             if failed:
                 raise HistoryError(
                     f"適用の途中で失敗し、次のファイルを元に戻せませんでした: {', '.join(failed)}。"
@@ -327,12 +353,44 @@ class History:
             if conflicts:
                 raise HistoryError("適用後に手で変更されたファイルがあります", conflicts)
         present = self._present(entry, restore)
-        for rel in entry.rels:
-            p = self.root / rel
-            if rel in present:
-                _put(p, (entry.dir / restore / rel).read_bytes())
-            else:
-                p.unlink(missing_ok=True)
+        expected = self._present(entry, expect)
+        # 確認から書き込みまでの間に変更されても気付けるよう、書き込む直前にファイルごとに再確認する。
+        # force のときは上書きするが、失われる内容は entry.dir/overwritten に退避する。
+        done = []  # (path, 書き込む前の内容)
+        try:
+            for rel in entry.rels:
+                p = self.root / rel
+                cur = _read(p)
+                want = (entry.dir / expect / rel).read_bytes() if rel in expected else None
+                if cur != want:
+                    if not force:
+                        raise _Conflict(rel)
+                    if cur is not None:
+                        _put(entry.dir / "overwritten" / rel, cur)
+                if rel in present:
+                    _put_atomic(p, (entry.dir / restore / rel).read_bytes())
+                else:
+                    p.unlink(missing_ok=True)
+                done.append((p, cur))
+        except BaseException as e:
+            failed = []
+            for p, cur in reversed(done):
+                try:
+                    if cur is None:
+                        p.unlink(missing_ok=True)
+                    else:
+                        _put_atomic(p, cur)
+                except OSError:
+                    failed.append(str(p.relative_to(self.root)))
+            if failed:
+                raise HistoryError(f"途中で失敗し、次のファイルを元に戻せませんでした: {', '.join(failed)}")
+            if isinstance(e, _Conflict):
+                raise HistoryError(
+                    "確認後にファイルが外部で変更されたため、何も変更せず中止しました", [e.rel]
+                )
+            if isinstance(e, OSError):
+                raise HistoryError(f"途中で失敗したため、すべて元に戻しました({e})")
+            raise
         src.pop()
         dst.append(entry)
         return entry

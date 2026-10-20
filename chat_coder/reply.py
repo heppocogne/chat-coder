@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .patch import DEL_RE, EDIT_RE
+from .patch import strip_blocks
 
 HEADER_RE = re.compile(r"^### LLM_LOOP[ \t]+(\S+)[ \t]*$", re.M)
 END_LINE_RE = re.compile(r"^### END(?:[ \t]+\S+)?[ \t]*$", re.M)  # 説明文の抽出用(ID は問わない)
@@ -26,16 +26,27 @@ def _strip_edge_fences(text):
     return "\n".join(lines) + "\n"
 
 
-def ingest(text, pack_id, buf):
+def header_id(buf):
+    m = HEADER_RE.search(buf)
+    return m.group(1) if m else None
+
+
+def ingest(text, pack_id, buf, old_ids=()):
     """新しいクリップボード内容を取り込む。(更新後の buf, 利用者へのメッセージ)
 
     buf は応答の蓄積(None = まだ受信していない)。
+    old_ids はこのセッションで過去に使った id。モデルは会話履歴の前の応答を真似て古い id を
+    書きがちなので、今回の id の代わりに受け付ける(古い応答の取り違えは呼び出し側で防ぐ)。
     """
     t = text.replace("\r\n", "\n")
     if PACK_RE.search(t):  # 自分が送った pack をコピーし直しただけ
         return buf, ""
     m = HEADER_RE.search(t)
     if m:
+        if m.group(1) in old_ids:
+            return t[m.start() :], (
+                f"応答の id が前回までの値({m.group(1)})でしたが、今回の応答として扱います。"
+            )
         if m.group(1) != pack_id:
             return buf, f"別の送信({m.group(1)})への応答なので無視しました。"
         return t[m.start() :], ""
@@ -49,22 +60,24 @@ def ingest(text, pack_id, buf):
     return head + _strip_edge_fences(t), "続きを連結しました。"
 
 
-def completed(buf, pack_id):
+def completed(buf, pack_id, old_ids=()):
     """`### END <pack_id>` まで届いていれば、その手前までの本文。届いていなければ None
 
     ID が一致する行だけを終端とみなし、複数あれば最後の行を採る。
     コードや説明の中の単独行 `### END` では完了扱いにならない。
+    old_ids の END 行(モデルが前回の id を写した場合)も終端として認める。
     """
+    ids = {pack_id, *old_ids}
+    pattern = "|".join(re.escape(i) for i in ids)
     last = None
-    for m in re.finditer(rf"^### END[ \t]+{re.escape(pack_id)}[ \t]*$", buf, re.M):
+    for m in re.finditer(rf"^### END[ \t]+(?:{pattern})[ \t]*$", buf, re.M):
         last = m
     return buf[: last.start()] if last else None
 
 
 def extract_prose(reply):
     """変更ブロックと目印行を除いた、説明文だけを返す"""
-    t = EDIT_RE.sub("", reply)
-    t = DEL_RE.sub("", t)
+    t = strip_blocks(reply)
     t = HEADER_RE.sub("", t)
     t = END_LINE_RE.sub("", t)
     t = _strip_edge_fences(t)

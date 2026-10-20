@@ -13,12 +13,33 @@ from .project import decode_bytes
 
 BACKUP_DIRNAME = ".llm_backup"
 
-EDIT_RE = re.compile(
-    r"^### FILE:[ \t]*([^\n]+?)[ \t]*\n<<<<<<< SEARCH[ \t]*\n(.*?)^=======[ \t]*\n(.*?)^>>>>>>> REPLACE[ \t]*$",
-    re.S | re.M,
-)
-DEL_RE = re.compile(r"^### DELETE:[ \t]*([^\n]+?)[ \t]*$", re.M)
-SEARCH_RE = re.compile(r"^<<<<<<< SEARCH[ \t]*$", re.M)
+# 行単位で解釈する。モデルが崩しがちな点(マーカーの記号数・大文字小文字・インデント、
+# FILE 行と SEARCH 行の間の空行やコードフェンス)は許容する
+FILE_RE = re.compile(r"^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?FILE:(?:\*\*)?[ \t]*(.+?)[ \t]*$", re.I)
+DEL_RE = re.compile(r"^### DELETE:[ \t]*(.+?)[ \t]*$")
+SEARCH_RE = re.compile(r"^([ \t]*)<{5,9}[ \t]*SEARCH[ \t]*$", re.I)
+DIVIDER_RE = re.compile(r"^[ \t]*={5,9}[ \t]*$")
+REPLACE_RE = re.compile(r"^[ \t]*>{5,9}[ \t]*REPLACE[ \t]*$", re.I)
+GAP_RE = re.compile(r"^[ \t]*(?:`{3,}.*)?$")  # 空行・コードフェンス行(ブロック間に挟まってもよい)
+ELLIPSIS = ("...", "…", "⋮")  # SEARCH 中でこれだけの行は「間を省略」の意味
+MAX_ELIDED_LINES = 400
+
+
+@dataclass
+class Op:
+    kind: str  # 'edit' | 'delete'
+    rel: str
+    old: str | None
+    new: str | None
+    start: int  # 応答中の開始行・終了行(0始まり、終了は含む)
+    end: int
+    index: int = 0  # 何番目の編集ブロックか(1始まり)
+
+    @property
+    def where(self):
+        if self.kind == "delete":
+            return f"応答の{self.start + 1}行目"
+        return f"ブロック{self.index}・応答の{self.start + 1}行目"
 
 
 @dataclass
@@ -46,7 +67,7 @@ class _File:
 
 
 def _clean_path(s):
-    return s.strip().strip("`\"'").replace("\\", "/")
+    return s.strip().strip("`\"'*").replace("\\", "/")
 
 
 _PROTECTED = (".git", BACKUP_DIRNAME)
@@ -82,42 +103,231 @@ def _canonical_rel(root, rel):
     return "/".join(parts)
 
 
+def _lines_eq(a, b):
+    return [l.rstrip() for l in a] == [l.rstrip() for l in b]
+
+
+def _find_exact(tl, ol):
+    return [i for i in range(len(tl) - len(ol) + 1) if _lines_eq(tl[i : i + len(ol)], ol)]
+
+
+def _split_elided(ol):
+    """SEARCH の行を、`...` だけの行で (先頭部分, 末尾部分) に分ける。省略が無ければ None"""
+    idx = [i for i, l in enumerate(ol) if l.strip() in ELLIPSIS]
+    if len(idx) != 1:
+        return None
+    head, tail = ol[: idx[0]], ol[idx[0] + 1 :]
+    return (head, tail) if head and tail else None
+
+
+def _find_elided(tl, head, tail):
+    """先頭部分で始まり、その後で最初に現れる末尾部分で終わる範囲 [(開始, 終了の次)]"""
+    out = []
+    for i in range(len(tl) - len(head) + 1):
+        if not _lines_eq(tl[i : i + len(head)], head):
+            continue
+        lo = i + len(head)
+        for j in range(lo, min(len(tl) - len(tail), lo + MAX_ELIDED_LINES) + 1):
+            if _lines_eq(tl[j : j + len(tail)], tail):
+                out.append((i, j + len(tail)))
+                break
+    return out
+
+
+def _show(line, width=70):
+    line = line.rstrip("\n")
+    return repr(line if len(line) <= width else line[:width] + "…")
+
+
+def _explain_mismatch(tl, ol):
+    """SEARCH が元コードのどこと食い違っているかを説明する文"""
+    nonblank = [l for l in ol if l.strip()]
+    if not nonblank:
+        return "SEARCH が空"
+    # 空白(インデント)を無視すれば一致するか
+    stripped = [l.strip() for l in ol]
+    n = len(ol)
+    for i in range(len(tl) - n + 1):
+        if [l.strip() for l in tl[i : i + n]] == stripped:
+            return (
+                f"インデント(先頭の空白・タブ)だけが違う。元コードの {i + 1} 行目付近は "
+                f"{_show(tl[i])} だが、SEARCH は {_show(ol[0])}"
+            )
+    # 最も多くの行が一致する位置を探す
+    best, best_i = -1, 0
+    for i in range(max(1, len(tl) - n + 1)):
+        score = sum(1 for k in range(min(n, len(tl) - i)) if tl[i + k].rstrip() == ol[k].rstrip())
+        if score > best:
+            best, best_i = score, i
+    if best <= 0:
+        # 先頭の1行だけでも探す
+        first = nonblank[0].strip()
+        hits = [i for i, l in enumerate(tl) if l.strip() == first]
+        if hits:
+            best_i = hits[0]
+        else:
+            return (
+                f"元コードに存在しない行を含む(例: {_show(nonblank[0])})。"
+                "別のファイルのコードか、存在しない関数・行を書いている可能性"
+            )
+    for k in range(n):
+        have = tl[best_i + k] if best_i + k < len(tl) else None
+        if have is None or have.rstrip() != ol[k].rstrip():
+            return (
+                f"最も近い箇所は元コードの {best_i + 1} 行目付近。"
+                f"SEARCH の {k + 1} 行目が違う: SEARCH={_show(ol[k])} / "
+                f"元コード={_show(have) if have is not None else '(ファイル末尾を超えた)'}"
+            )
+    return "原因を特定できなかった"
+
+
 def find_replace(text, old, new):
     n = text.count(old)
     if n > 1:
-        raise ValueError(f"SEARCH が {n} 箇所に一致(1箇所に絞る必要あり)")
+        tl0 = text.split("\n")
+        ol0 = old.rstrip("\n").split("\n")
+        at = ", ".join(str(i + 1) for i in _find_exact(tl0, ol0)[:6])
+        raise ValueError(
+            f"SEARCH が {n} 箇所に一致(行 {at})。前後の行を足して1箇所に絞る必要がある"
+        )
     if n == 1:
         return text.replace(old, new, 1)
-    # 行末空白の違いだけ許容するフォールバック
     tl = text.split("\n")
     ol = old.rstrip("\n").split("\n")
-    key = [l.rstrip() for l in ol]
-    hits = [
-        i for i in range(len(tl) - len(ol) + 1) if [l.rstrip() for l in tl[i : i + len(ol)]] == key
-    ]
-    if len(hits) != 1:
-        raise ValueError(f"SEARCH が {len(hits)} 箇所に一致(0なら元コードと違っている)")
-    i = hits[0]
     nl = new.rstrip("\n").split("\n") if new.strip("\n") else []
-    tl[i : i + len(ol)] = nl
+    # 行末空白の違いだけ許容するフォールバック
+    hits = [(i, i + len(ol)) for i in _find_exact(tl, ol)]
+    # `...` で間を省略した SEARCH
+    elided = _split_elided(ol)
+    if not hits and elided:
+        hits = _find_elided(tl, *elided)
+        if not hits:
+            raise ValueError(
+                "`...` を含む SEARCH の先頭部分と末尾部分に一致する範囲が元コードに無い。"
+                + _explain_mismatch(tl, elided[0])
+            )
+    if len(hits) > 1:
+        at = ", ".join(str(i + 1) for i, _ in hits[:6])
+        raise ValueError(f"SEARCH が {len(hits)} 箇所に一致(行 {at})。1箇所に絞る必要がある")
+    if not hits:
+        raise ValueError("SEARCH が元コードと一致しない。" + _explain_mismatch(tl, ol))
+    i, j = hits[0]
+    tl[i:j] = nl
     return "\n".join(tl)
 
 
+def _dedent(lines, indent):
+    if not indent:
+        return lines
+    return [l[len(indent) :] if l.startswith(indent) else l for l in lines]
+
+
 def parse_ops(reply):
-    """[(位置, 'edit'|'delete', 相対パス, SEARCH, REPLACE)] を出現順に返す"""
-    ops = []
-    for m in EDIT_RE.finditer(reply):
-        ops.append((m.start(), "edit", _clean_path(m.group(1)), m.group(2), m.group(3)))
-    for m in DEL_RE.finditer(reply):
-        ops.append((m.start(), "delete", _clean_path(m.group(1)), None, None))
-    ops.sort(key=lambda o: o[0])
-    return ops
+    """応答から編集・削除を出現順に取り出す。(ops, 形式の問題の一覧)"""
+    lines = reply.split("\n")
+    ops, problems = [], []
+    path = None  # (相対パス, FILE 行の位置)。FILE 行のあと、空行・フェンス以外が挟まると無効
+    last = None  # 直前のブロックのパス(同じファイルの続きのブロックで FILE 行が省かれた場合用)
+    n_edit = 0
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        m = DEL_RE.match(ln)
+        if m:
+            ops.append(Op("delete", _clean_path(m.group(1)), None, None, i, i))
+            path = last = None
+            i += 1
+            continue
+        m = FILE_RE.match(ln)
+        if m:
+            path = (_clean_path(m.group(1)), i)
+            i += 1
+            continue
+        m = SEARCH_RE.match(ln)
+        if not m:
+            if REPLACE_RE.match(ln):
+                problems.append(f"応答の{i + 1}行目: 対応する SEARCH のない `>>>>>>> REPLACE`")
+            if not GAP_RE.match(ln):
+                path = last = None
+            i += 1
+            continue
+        # ---- SEARCH ブロック
+        start, indent = i, m.group(1)
+        who = f"応答の{start + 1}行目の SEARCH"
+        search, replace, j = [], [], i + 1
+        while j < len(lines) and not DIVIDER_RE.match(lines[j]):
+            if SEARCH_RE.match(lines[j]):
+                break
+            search.append(lines[j])
+            j += 1
+        if j >= len(lines) or SEARCH_RE.match(lines[j]):
+            at = "" if j >= len(lines) else f"(応答の{j + 1}行目で次の SEARCH が始まっている)"
+            problems.append(
+                f"{who}: 区切りの `=======` が無い{at}"
+                + ("。応答が途中で切れている可能性" if j >= len(lines) else "")
+            )
+            path = last = None
+            i = j
+            continue
+        j += 1
+        while j < len(lines) and not REPLACE_RE.match(lines[j]):
+            if SEARCH_RE.match(lines[j]):
+                break
+            replace.append(lines[j])
+            j += 1
+        if j >= len(lines) or SEARCH_RE.match(lines[j]):
+            at = "" if j >= len(lines) else f"(応答の{j + 1}行目で次の SEARCH が始まっている)"
+            problems.append(
+                f"{who}: 終端の `>>>>>>> REPLACE` が無い{at}"
+                + ("。応答が途中で切れている可能性" if j >= len(lines) else "")
+            )
+            path = last = None
+            i = j
+            continue
+        if path:
+            rel, first = path[0], path[1]
+        elif last:
+            rel, first = last, start
+        else:
+            rel = None
+        if rel is None:
+            problems.append(
+                f"{who}: 直前に `### FILE: パス` の行が無く、対象のファイルが分からない"
+            )
+        else:
+            n_edit += 1
+            search, replace = _dedent(search, indent), _dedent(replace, indent)
+            ops.append(
+                Op(
+                    "edit",
+                    rel,
+                    "\n".join(search) + "\n" if search else "",
+                    "\n".join(replace) + "\n" if replace else "",
+                    first,
+                    j,
+                    n_edit,
+                )
+            )
+            last = rel
+        path = None
+        i = j + 1
+    return ops, problems
+
+
+def strip_blocks(reply):
+    """編集・削除のブロックを取り除いた応答(説明文の抽出用)"""
+    reply = reply.replace("\r\n", "\n")
+    ops, _ = parse_ops(reply)
+    drop = set()
+    for op in ops:
+        drop.update(range(op.start, op.end + 1))
+    return "\n".join(l for k, l in enumerate(reply.split("\n")) if k not in drop)
 
 
 def plan_changes(root, reply):
     """応答を解釈して変更内容を作る。ファイルは書き換えない。errors があれば適用してはいけない。"""
     reply = reply.replace("\r\n", "\n")
-    ops = parse_ops(reply)
+    ops, problems = parse_ops(reply)
     plan = Plan(n_ops=len(ops))
     errors = plan.errors
 
@@ -125,13 +335,8 @@ def plan_changes(root, reply):
         if msg not in errors:
             errors.append(msg)
 
-    n_search = len(SEARCH_RE.findall(reply))
-    n_edit = sum(1 for o in ops if o[1] == "edit")
-    if n_search != n_edit:
-        err(
-            f"SEARCH が {n_search} 個あるのに {n_edit} 個しか認識できなかった"
-            "(ブロックの形式が崩れているか、応答が途中で切れている)"
-        )
+    for msg in problems:
+        err("[形式] " + msg)
 
     files, state = {}, {}
 
@@ -147,7 +352,9 @@ def plan_changes(root, reply):
             files[rel] = _File(None, None)
         state[rel] = files[rel].text
 
-    for _, kind, rel, old, new in ops:
+    for op in ops:
+        kind, old, new = op.kind, op.old, op.new
+        rel = op.rel
         try:
             rel = _canonical_rel(root, rel)
             touch(rel)
@@ -162,7 +369,8 @@ def plan_changes(root, reply):
             else:
                 state[rel] = find_replace(state[rel], old, new)
         except (ValueError, OSError) as e:
-            err(f"{rel}: {e}")
+            kind_label = "[削除]" if kind == "delete" else "[適用]"
+            err(f"{kind_label} {rel}({op.where}): {e}")
     if errors:
         return plan
 

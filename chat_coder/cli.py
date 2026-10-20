@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import secrets
 import sys
 import time
@@ -13,7 +14,7 @@ from . import __version__, autosend, clipboard
 from .ignore import LLMIGNORE, ensure_llmignore
 from .patch import BACKUP_DIRNAME, History, HistoryError, plan_changes
 from .project import WARN_CHARS, build_pack, collect_files
-from .reply import completed, extract_prose, ingest
+from .reply import HEADER_RE, completed, extract_prose, header_id, ingest
 
 COMMANDS = {"/undo", "/undo!", "/redo", "/redo!", "/copy", "/wait", "/q"}
 CTRL_Q = "\x11"
@@ -113,11 +114,18 @@ def read_prompt(note):
     return "\n".join(lines)
 
 
-def wait_reply(pack_id, seq0, state):
+def _fingerprint(body):
+    """応答の中身の識別用(先頭行の id は除く)"""
+    return hashlib.sha1(HEADER_RE.sub("", body).strip().encode("utf-8")).hexdigest()
+
+
+def wait_reply(pack_id, seq0, state, old_ids=(), applied=frozenset()):
     """応答が揃うまで待って本文を返す。Ctrl+Q で中止したら None
 
     state["buf"] に途中までの応答を保持する(/wait で再開したとき引き継ぐ)。
     seq0 が None のときは、現在のクリップボードも応答の候補として扱う。
+    old_ids: 過去の id。応答がこの id を書いていても受け付ける(前回の応答を真似て書き間違えがち)。
+    applied: 処理済みの応答の識別子。古い id の応答がこれと同じなら、使い回しとみなして無視する。
     """
     print("チャットの応答をコピーするのを待っています… (Ctrl+Q で中止、/wait で再開)")
     buf = state.get("buf")
@@ -136,14 +144,18 @@ def wait_reply(pack_id, seq0, state):
                 except OSError:
                     continue
                 was_none = buf is None
-                buf, msg = ingest(text, pack_id, buf)
+                buf, msg = ingest(text, pack_id, buf, old_ids)
                 state["buf"] = buf
                 if msg:
                     print(msg)
                 if buf is None:
                     continue
-                body = completed(buf, pack_id)
+                body = completed(buf, pack_id, old_ids)
                 if body is not None:
+                    if header_id(buf) != pack_id and _fingerprint(body) in applied:
+                        print("すでに処理した応答と同じ内容なので無視しました。")
+                        buf = state["buf"] = None
+                        continue
                     state["buf"] = None
                     return body
                 if was_none:
@@ -233,8 +245,9 @@ def _handle_reply(root, history, reply):
         print("次の指示を入力すると、このエラーも一緒に送ります(空行のみで再送)。")
         return (
             "前回の応答は次の理由で適用できませんでした(ファイルは何も変更されていません)。"
-            "SEARCH は現在のファイル内容から1文字も変えずにコピーしてやり直してください。\n"
-            + "\n".join(f"- {e}" for e in plan.errors)
+            "[形式] は SEARCH/REPLACE ブロックの書き方の問題、[適用] は SEARCH が現在のファイルと"
+            "食い違っている問題です。SEARCH は下のファイル内容から1文字も変えずにコピーし、"
+            "今回の id で最初から書き直してください。\n" + "\n".join(f"- {e}" for e in plan.errors)
         )
     if not plan.changes:
         print("変更はありません。" if not plan.n_ops else "変更はありません(内容が同じ)。")
@@ -302,6 +315,8 @@ def main(argv=None):
     note = ""
     last = None  # (pack, pack_id)
     state = {}  # 待機中の途中経過(/wait で再開するため保持)
+    old_ids = []  # 過去の pack の id
+    applied = set()  # 処理済みの応答の識別子
     while True:
         instr = read_prompt(note)
         if instr is None:  # Ctrl+C: 入力だけ取り消す
@@ -313,8 +328,9 @@ def main(argv=None):
             if last is None:
                 print("まだ pack を作っていません。")
                 continue
-            reply = wait_reply(last[1], None, state)
+            reply = wait_reply(last[1], None, state, old_ids, applied)
             if reply is not None:
+                applied.add(_fingerprint(reply))
                 beep()
                 note = _handle_reply(root, history, reply)
             continue
@@ -329,6 +345,8 @@ def main(argv=None):
         else:
             pack, pack_id = _pack(root, instr or "前回の適用結果を踏まえて修正してください。", note)
             note = ""
+            if last is not None:
+                old_ids.append(last[1])
             last = (pack, pack_id)
             state = {}
         try:
@@ -363,9 +381,10 @@ def main(argv=None):
                     print(f"自動入力に失敗しました({type(e).__name__}: {e})。")
             if not sent:
                 print("チャットに貼り付けて送信してください。")
-        reply = wait_reply(pack_id, seq0, state)
+        reply = wait_reply(pack_id, seq0, state, old_ids, applied)
         if reply is None:
             continue
+        applied.add(_fingerprint(reply))
         beep()
         note = _handle_reply(root, history, reply)
 

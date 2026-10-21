@@ -37,6 +37,50 @@ def read_prompt(note):
         print(
             "  コマンド: /undo /redo /copy(pack を再コピー) /wait(コピー待ちを再開) /q  ・何も入力せず空行で終了"
         )
+    try:
+        text = _edit_multiline()
+    except _Cancelled:
+        return None
+    return _read_lines() if text is None else text
+
+
+class _Cancelled(Exception):
+    pass
+
+
+def _edit_multiline():
+    """prompt_toolkit があれば、改行後も前の行を矢印キーで編集できる入力欄を使う。
+    なければ None を返す(行単位の入力にフォールバック)。Ctrl+C は _Cancelled"""
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.key_binding import KeyBindings
+    except ImportError:
+        return None
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    def _(event):
+        buf = event.current_buffer
+        text = buf.text
+        at_end = buf.cursor_position == len(text)
+        first = text.strip().lower()
+        # 末尾が空行(または何も入力していない)で Enter なら確定。コマンドは1行目で即実行
+        if at_end and (not text or text.endswith("\n") or first in COMMANDS):
+            buf.validate_and_handle()
+        else:
+            buf.insert_text("\n")
+
+    session = PromptSession(multiline=True, key_bindings=kb)
+    try:
+        return session.prompt("").strip("\n")
+    except EOFError:
+        return ""
+    except KeyboardInterrupt:
+        print("\n(入力を取り消しました)")
+        raise _Cancelled
+
+
+def _read_lines():
     lines = []
     while True:
         try:

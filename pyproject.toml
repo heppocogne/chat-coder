@@ -17,6 +17,9 @@ chat-coder = "chat_coder.cli:main"
 auto = [
     "pywinauto>=0.6.8",
 ]
+edit = [
+    "prompt_toolkit>=3.0",
+]
 dev = [
     "ruff>=0.17.0",
 ]
